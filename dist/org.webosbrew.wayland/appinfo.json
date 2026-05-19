@@ -1,0 +1,12 @@
+{
+  "id": "org.webosbrew.wayland",
+  "version": "0.0.5",
+  "vendor": "local",
+  "type": "native",
+  "main": "bin/native_main",
+  "title": "Wayland Native Lab",
+  "icon": "icon.png",
+  "noSplashOnLaunch": true,
+  "spinnerOnLaunch": false,
+  "nativeLifeCycleInterfaceVersion": 2
+}
