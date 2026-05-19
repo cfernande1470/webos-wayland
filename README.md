@@ -1,111 +1,126 @@
 # webos-wayland
 
-A minimal native Wayland application for rooted LG webOS TVs.
+Native Wayland + EGL/GLES experiments for rooted LG webOS TVs.
 
-This project proves that a native webOS app launched by SAM (System Application Manager) can create a real Wayland surface on the TV compositor, draw into it using `wl_shm`, and receive basic input from the LG remote and Magic Remote pointer.
+This repository contains a minimal native webOS application that is launched by SAM (System Application Manager), creates a real Wayland surface on the TV compositor, receives input from the LG remote / Magic Remote, and renders using either:
 
-It does **not** use Qt, X11, Firefox, Electron, Chromium, SDL, or any GUI toolkit. It is a small native C experiment built directly on top of `libwayland-client`.
+- `wl_shm` software buffers as a CPU fallback;
+- `wl_egl_window` + EGL + OpenGL ES as the GPU path;
+- an optional 4K EGL/GLES stress-test client.
 
-## Current status
+The project does **not** use Qt, SDL, X11, Xwayland, Firefox, Chromium, Electron, or a browser-based UI.
 
-Working:
+It is plain C on top of native webOS + Wayland.
 
-- Native webOS app registered and launched by SAM.
-- Native ARM/webOS binaries built with the Homebrew/webOS `arm-webos-linux-gnueabi` SDK.
-- Wayland connection to the real webOS compositor.
-- Fullscreen `wl_shell` surface.
-- Software rendering through `wl_shm`.
-- Frame pacing through Wayland frame callbacks.
-- Triple-buffered shared-memory buffers.
-- Keyboard/remote input through `wl_seat`.
-- LG remote OK button.
-- Directional keys.
-- Magic Remote pointer motion after pointer focus is acquired.
-- Pointer click events.
-- Basic draggable demo window inside the rendered surface.
-- Install/run/debug scripts for fast iteration.
+## Final confirmed result
 
-Known limitations:
-
-- The system Exit/Back UI is owned by webOS/SAM, not by this app. When that system dialog appears, the app loses pointer/keyboard focus.
-- The app currently uses `wl_shell`, not `wl_webos_shell`.
-- Rendering is CPU/software based through `wl_shm`; it does not use EGL/GLES yet.
-- This is not a real Wayland compositor and not an X server. It is a native Wayland client drawing its own UI inside one fullscreen surface.
-- Packaging as a clean IPK was not the successful route during this experiment; direct install under `/media/developer/apps/usr/palm/applications` was used.
-
-## Architecture
+The EGL/GLES renderer was confirmed on the target TV with:
 
 ```text
-webOS SAM launch
-└── org.webosbrew.wayland
-    └── bin/native_main
-        └── sets runtime environment
-        └── starts bin/wayland_rect
-            └── connects to /tmp/xdg/wayland-0
-            └── creates wl_shell fullscreen surface
-            └── renders with wl_shm
-            └── receives wl_seat input
+EGL_VERSION 1.4
+EGL_VENDOR ARM
+EGL_CLIENT_APIS OpenGL_ES
+GL_VENDOR ARM
+GL_RENDERER Mali-G51
+GL_VERSION OpenGL ES 3.2 v1.r9p0-01rel0.5fa3737ac24396a69b1d512b70e9e31d
 ```
 
-The important discovery is that launching the Wayland client directly over SSH/root is not enough for stable foreground presentation. Direct execution can show the surface briefly, but webOS may later hide or replace it. Running the client as a real native app launched by SAM gives it the correct foreground application context.
+That means rendering is going through the ARM Mali GPU driver, not through the previous `wl_shm` CPU path.
 
-## What this is not
+## What this project proves
 
-This project is **not Qt**.
+The important discovery is that a Wayland client launched directly over SSH/root can create a surface and draw briefly, but it may not stay visible as a real foreground application.
 
-It also is not:
+The stable route is:
 
-- a QtWayland application;
-- a web app;
-- a Chromium/Electron wrapper;
-- an X server;
-- Xwayland;
-- a nested compositor;
-- a Firefox launcher.
+```text
+Install as native webOS app
+→ let SAM launch it
+→ run inside webOS foreground app lifecycle/context
+→ create Wayland surface
+→ render with wl_shm or EGL/GLES
+```
 
-The app is plain C using:
+SAM foreground context matters.
 
-- `libwayland-client`;
+## High-level architecture
+
+```text
+webOS SAM
+└── org.webosbrew.wayland
+    └── bin/native_main
+        └── bin/client -> wayland_egl or wayland_rect
+```
+
+`native_main` is a small native entry point. It prepares the runtime environment and executes `bin/client`.
+
+`bin/client` is a symlink so the renderer can be switched without rebuilding:
+
+```text
+client -> wayland_egl       # normal GPU renderer
+client -> wayland_rect      # CPU / wl_shm fallback
+client -> /tmp/...          # temporary experimental renderer
+```
+
+## Renderers
+
+### `wayland_rect`
+
+CPU fallback renderer.
+
+Uses:
+
 - `wl_compositor`;
 - `wl_shell`;
 - `wl_shm`;
 - `wl_seat`;
-- `wl_pointer`;
-- `wl_keyboard`.
+- `wl_keyboard`;
+- `wl_pointer`.
 
-## Repository layout
+This client renders into shared-memory buffers and is useful for debugging, validating Wayland visibility, and checking input.
+
+### `wayland_egl`
+
+Normal GPU renderer.
+
+Uses:
+
+- `wl_compositor`;
+- `wl_shell`;
+- `wl_egl_window`;
+- EGL;
+- OpenGL ES;
+- `wl_seat`;
+- `wl_keyboard`;
+- `wl_pointer`.
+
+This is the preferred normal renderer.
+
+### `wayland_egl_stress`
+
+Experimental GPU stress-test renderer.
+
+Uses the same EGL/GLES path as `wayland_egl`, but forces a 3840x2160 render target and runs a heavier fullscreen fragment shader.
+
+It is intended as a benchmark / torture test, not as the default renderer.
+
+Important: 4K video playback on a TV uses dedicated hardware video decode blocks. A 4K fullscreen fragment shader is a different workload and can be much heavier than video playback.
+
+Observed heavy stress-test result on Mali-G51:
 
 ```text
-native/
-  native_main.c        # native app entry point / launcher wrapper
-  wayland_rect.c       # Wayland client, renderer, input handling
-
-scripts/
-  build.sh             # cross-build using the webOS/Homebrew SDK
-  install_tv_safe.sh   # older safe installer
-  install_tv_atomic.sh # atomic installer variant
-  install_tv_lowspace.sh # low-space installer used when TV storage is tight
-  launch_tv.sh         # launch app through SAM
-  stop_tv.sh           # stop app/processes
-  status_tv.sh         # inspect process/log state
-  dev_cycle.sh         # optional build/install/relaunch loop
-
-dist/
-  org.webosbrew.wayland/
-    appinfo.json
-    icon.png
-    bin/
-      native_main
-      wayland_rect
+STRESS_FRAME frame=... size=3840x2160 fps=~4-5 avg=~4-5 force4k=1
 ```
 
-## Target device
+This low FPS is expected for the intentionally expensive shader. It does not mean the TV cannot play 4K video.
 
-Tested on an LG webOS TV with:
+## Target environment
+
+Observed target TV:
 
 ```text
-Kernel: Linux 4.4.84 aarch64
-webOS native app userland: ARM 32-bit EABI
+Kernel: Linux LGwebOSTV 4.4.84 aarch64
+Native app ABI used here: ARM 32-bit EABI
 Dynamic loader: /lib/ld-linux.so.3 -> /lib/ld-2.28.so
 Wayland socket: /tmp/xdg/wayland-0
 XDG_RUNTIME_DIR: /tmp/xdg
@@ -113,7 +128,7 @@ WAYLAND_DISPLAY: wayland-0
 Compositor: /usr/bin/surface-manager
 ```
 
-Detected Wayland globals included:
+Observed Wayland globals included:
 
 ```text
 wl_compositor
@@ -134,41 +149,43 @@ wl_webos_shell
 wl_webos_input_manager
 ```
 
-## Toolchain
+## 32-bit app on a 64-bit TV
 
-The TV kernel is `aarch64`, but the native application ABI used here is **ARM 32-bit EABI**, not Ubuntu/aarch64.
+The TV kernel is `aarch64`, but the working native app ABI in this setup is ARM 32-bit EABI.
 
-The correct output should look like this:
+Correct binary format:
 
 ```text
-ELF 32-bit LSB executable, ARM, EABI5, dynamically linked,
+ELF 32-bit LSB executable, ARM, EABI5
 interpreter /lib/ld-linux.so.3
 ```
 
-If your binary looks like this, it is wrong for this setup:
+Incorrect binary format for this setup:
 
 ```text
-ELF 64-bit LSB pie executable, ARM aarch64,
+ELF 64-bit LSB executable, ARM aarch64
 interpreter /lib/ld-linux-aarch64.so.1
 ```
 
-That wrong aarch64 binary typically fails under `jailer` or SAM with:
+The incorrect aarch64 build can fail with:
 
 ```text
 Error: No such file or directory, exe: ...
 ```
 
-because the requested dynamic loader is not available in the native app environment.
+because the requested loader is not available in the native app runtime.
 
-## SDK setup
+This does not prevent GPU rendering. The EGL/GLES renderer still uses the ARM Mali GPU through the TV's native graphics stack.
 
-This project was built with the Homebrew/webOS native SDK:
+## Toolchain
+
+This project was built with the Homebrew/webOS ARM toolchain:
 
 ```text
 arm-webos-linux-gnueabi_sdk-buildroot
 ```
 
-Expected SDK path in this setup:
+Expected SDK path used during development:
 
 ```bash
 /home/pi/disk/webos-sdk/arm-webos-linux-gnueabi_sdk-buildroot
@@ -182,7 +199,7 @@ export WEBOS_SDK="/home/pi/disk/webos-sdk/arm-webos-linux-gnueabi_sdk-buildroot"
 EOF
 ```
 
-If the SDK wrapper cannot find the real GCC, create the compatibility symlink:
+If the SDK wrapper cannot find the real GCC, create this compatibility symlink:
 
 ```bash
 source ./.webos-sdk.env
@@ -191,15 +208,44 @@ cd "$WEBOS_SDK/bin"
 ln -sf arm-webos-linux-gnueabi-gcc-12.2.0.br_real arm-webos-linux-gnueabi-gcc.br_real
 ```
 
-Verify:
+Verify the compiler:
 
 ```bash
 source ./.webos-sdk.env
-
 "$WEBOS_SDK/bin/arm-webos-linux-gnueabi-gcc" --version | head
-file "$WEBOS_SDK/bin/toolchain-wrapper"
-file "$WEBOS_SDK/bin/arm-webos-linux-gnueabi-gcc-12.2.0.br_real"
 ```
+
+## Repository layout
+
+```text
+native/
+  native_main.c
+  wayland_rect.c
+  wayland_egl.c
+  wayland_egl_stress.c
+
+scripts/
+  build.sh
+  install_tv_lowspace.sh
+  install_tv_safe.sh
+  install_tv_atomic.sh
+  launch_tv.sh
+  stop_tv.sh
+  status_tv.sh
+  dev_cycle.sh
+
+dist/
+  org.webosbrew.wayland/
+    appinfo.json
+    icon.png
+    bin/
+      native_main
+      wayland_rect
+      wayland_egl
+      wayland_egl_stress
+```
+
+`dist/` is a build output directory and does not need to be committed.
 
 ## Build
 
@@ -208,68 +254,66 @@ cd ~/disk/webos-wayland
 ./scripts/build.sh
 ```
 
-Successful build output should include:
+Expected result:
 
 ```text
 ===== ABI RESULT =====
-dist/org.webosbrew.wayland/bin/native_main:  ELF 32-bit LSB executable, ARM ...
-dist/org.webosbrew.wayland/bin/wayland_rect: ELF 32-bit LSB executable, ARM ...
+native_main:        ELF 32-bit LSB executable, ARM ...
+wayland_rect:       ELF 32-bit LSB executable, ARM ...
+wayland_egl:        ELF 32-bit LSB executable, ARM ...
+wayland_egl_stress: ELF 32-bit LSB executable, ARM ...
 
 ===== HARD ABI GUARD =====
-OK: binarios webOS ARM 32-bit generados.
+OK: ARM/webOS binaries generated.
 ```
 
-## Install on TV
+## Install
 
-The app is installed directly into the developer app directory:
+The app is installed under:
 
 ```text
 /media/developer/apps/usr/palm/applications/org.webosbrew.wayland
 ```
 
-Recommended installer when storage is tight:
+Use the low-space installer because the developer/appstore partition can be almost full:
 
 ```bash
-cd ~/disk/webos-wayland
 ./scripts/install_tv_lowspace.sh
 ```
 
-The low-space installer stops the running app, removes old binaries, uploads new binaries, and avoids needing double space for `.new` files.
+The TV in this experiment had `/mnt/lg/appstore` at 100%, so experimental binaries should not be left in the app partition.
 
-If there is enough storage, the atomic installer can also be used:
+## Recommended TV app directory state
 
-```bash
-./scripts/install_tv_atomic.sh
+Keep the installed TV app minimal:
+
+```text
+/media/developer/apps/usr/palm/applications/org.webosbrew.wayland/bin/
+  native_main
+  wayland_egl
+  wayland_rect
+  client -> wayland_egl
 ```
+
+Do not leave stress-test binaries in the app directory if storage is tight.
 
 ## Launch
 
-Launch through SAM:
-
 ```bash
-cd ~/disk/webos-wayland
 ./scripts/launch_tv.sh
 ```
 
-Equivalent manual command on the TV:
+Manual launch:
 
 ```bash
-luna-send -n 1 -f luna://com.webos.applicationManager/launch '{"id":"org.webosbrew.wayland"}'
+ssh root@192.168.2.121 '
+luna-send -n 1 -f luna://com.webos.applicationManager/launch "{\"id\":\"org.webosbrew.wayland\"}"
+'
 ```
-
-Expected process tree:
-
-```text
-/media/developer/apps/usr/palm/applications/org.webosbrew.wayland/bin/native_main
-/media/developer/apps/usr/palm/applications/org.webosbrew.wayland/bin/wayland_rect
-```
-
-Depending on the current `native_main` wrapper implementation, `native_main` may either keep `wayland_rect` as a child process or `exec()` into it.
 
 ## Stop
 
 ```bash
-cd ~/disk/webos-wayland
 ./scripts/stop_tv.sh
 ```
 
@@ -278,9 +322,122 @@ Manual fallback:
 ```bash
 ssh root@192.168.2.121 '
 set +e
-luna-send -n 1 -f luna://com.webos.applicationManager/closeByAppId "{"id":"org.webosbrew.wayland"}"
+luna-send -n 1 -f luna://com.webos.applicationManager/closeByAppId "{\"id\":\"org.webosbrew.wayland\"}"
+killall wayland_egl_stress 2>/dev/null
+killall wayland_egl 2>/dev/null
 killall wayland_rect 2>/dev/null
 killall native_main 2>/dev/null
+killall client 2>/dev/null
+'
+```
+
+## Switching renderers
+
+### Use normal EGL/GPU renderer
+
+```bash
+ssh root@192.168.2.121 '
+APP_DIR="/media/developer/apps/usr/palm/applications/org.webosbrew.wayland"
+
+set +e
+luna-send -n 1 -f luna://com.webos.applicationManager/closeByAppId "{\"id\":\"org.webosbrew.wayland\"}" >/dev/null 2>&1
+killall wayland_egl_stress 2>/dev/null
+killall wayland_egl 2>/dev/null
+killall wayland_rect 2>/dev/null
+killall native_main 2>/dev/null
+killall client 2>/dev/null
+
+ln -sf wayland_egl "$APP_DIR/bin/client"
+ls -l "$APP_DIR/bin/client"
+'
+```
+
+Then:
+
+```bash
+./scripts/launch_tv.sh
+```
+
+### Use CPU fallback
+
+```bash
+ssh root@192.168.2.121 '
+APP_DIR="/media/developer/apps/usr/palm/applications/org.webosbrew.wayland"
+
+set +e
+luna-send -n 1 -f luna://com.webos.applicationManager/closeByAppId "{\"id\":\"org.webosbrew.wayland\"}" >/dev/null 2>&1
+killall wayland_egl_stress 2>/dev/null
+killall wayland_egl 2>/dev/null
+killall wayland_rect 2>/dev/null
+killall native_main 2>/dev/null
+killall client 2>/dev/null
+
+ln -sf wayland_rect "$APP_DIR/bin/client"
+ls -l "$APP_DIR/bin/client"
+'
+```
+
+Then:
+
+```bash
+./scripts/launch_tv.sh
+```
+
+## Running temporary experiments from `/tmp`
+
+Because the appstore/developer partition can be full, experimental binaries should be uploaded to `/tmp` and selected through the `client` symlink.
+
+Example for `wayland_egl_stress`:
+
+```bash
+scp dist/org.webosbrew.wayland/bin/wayland_egl_stress root@192.168.2.121:/tmp/wayland_egl_stress
+```
+
+```bash
+ssh root@192.168.2.121 '
+APP_DIR="/media/developer/apps/usr/palm/applications/org.webosbrew.wayland"
+
+set +e
+luna-send -n 1 -f luna://com.webos.applicationManager/closeByAppId "{\"id\":\"org.webosbrew.wayland\"}" >/dev/null 2>&1
+killall wayland_egl_stress 2>/dev/null
+killall wayland_egl 2>/dev/null
+killall wayland_rect 2>/dev/null
+killall native_main 2>/dev/null
+killall client 2>/dev/null
+
+chmod 755 /tmp/wayland_egl_stress
+ln -sf /tmp/wayland_egl_stress "$APP_DIR/bin/client"
+
+rm -f /tmp/org.webosbrew.wayland.client.log
+rm -f /tmp/org.webosbrew.wayland.native_main.log
+'
+```
+
+Then launch:
+
+```bash
+./scripts/launch_tv.sh
+```
+
+Return to normal EGL afterwards:
+
+```bash
+ssh root@192.168.2.121 '
+APP_DIR="/media/developer/apps/usr/palm/applications/org.webosbrew.wayland"
+
+set +e
+luna-send -n 1 -f luna://com.webos.applicationManager/closeByAppId "{\"id\":\"org.webosbrew.wayland\"}" >/dev/null 2>&1
+killall wayland_egl_stress 2>/dev/null
+killall wayland_egl 2>/dev/null
+killall wayland_rect 2>/dev/null
+killall native_main 2>/dev/null
+killall client 2>/dev/null
+
+rm -f /tmp/wayland_egl_stress
+rm -f /tmp/org.webosbrew.wayland.client.log
+rm -f /tmp/org.webosbrew.wayland.native_main.log
+
+ln -sf wayland_egl "$APP_DIR/bin/client"
 '
 ```
 
@@ -289,165 +446,176 @@ killall native_main 2>/dev/null
 ```bash
 ssh root@192.168.2.121 '
 echo "===== PROCS ====="
-ps -ef | grep -E "org.webosbrew.wayland|native_main|wayland_rect" | grep -v grep || true
+ps -ef | grep -E "org.webosbrew.wayland|native_main|wayland_rect|wayland_egl|wayland_egl_stress|client" | grep -v grep || true
 
 echo
 echo "===== native_main ====="
 cat /tmp/org.webosbrew.wayland.native_main.log 2>/dev/null || true
 
 echo
-echo "===== wayland_rect ====="
-tail -160 /tmp/org.webosbrew.wayland.wayland_rect.log 2>/dev/null || true
+echo "===== client ====="
+tail -200 /tmp/org.webosbrew.wayland.client.log 2>/dev/null || true
+
+echo
+echo "===== wl_shm fallback log ====="
+tail -120 /tmp/org.webosbrew.wayland.wayland_rect.log 2>/dev/null || true
 '
 ```
 
-Live log:
+Confirm EGL/GPU:
 
 ```bash
-ssh root@192.168.2.121 'tail -f /tmp/org.webosbrew.wayland.wayland_rect.log'
+ssh root@192.168.2.121 '
+grep -E "EGL_VERSION|EGL_VENDOR|EGL_CLIENT_APIS|GL_VENDOR|GL_RENDERER|GL_VERSION" /tmp/org.webosbrew.wayland.client.log
+'
 ```
 
-## Input behavior
+Expected:
+
+```text
+EGL_VERSION 1.4
+EGL_VENDOR ARM
+EGL_CLIENT_APIS OpenGL_ES
+GL_VENDOR ARM
+GL_RENDERER Mali-G51
+GL_VERSION OpenGL ES 3.2 ...
+```
+
+## Input
 
 Observed input events:
 
 ```text
-KEY key=28       # OK / Enter
-KEY key=106      # Right
-KEY key=105      # Left
-KEY key=103      # Up
-KEY key=108      # Down
-KEY key=1198     # LG-specific remote key
-KEY key=1199     # LG-specific remote key / system exit-related
+KEY key=28        OK / Enter
+KEY key=106       Right
+KEY key=105       Left
+KEY key=103       Up
+KEY key=108       Down
+KEY key=1198      LG-specific remote key
+KEY key=1199      LG-specific remote key / system exit-related
 POINTER_BUTTON button=272
 POINTER_MOTION x=... y=...
 ```
 
-The Magic Remote pointer may not deliver motion until pointer focus is acquired, typically after an OK/click interaction.
+The Magic Remote pointer may start delivering motion only after pointer focus is acquired, usually after clicking once.
 
-The system Exit/Back dialog is handled by webOS, not this app. When it appears, the app can receive `KEYBOARD_LEAVE` and `POINTER_LEAVE`, so the app cannot reliably click inside that system dialog.
+The system Exit/Back menu is owned by webOS/SAM. When that menu appears, the app can receive `KEYBOARD_LEAVE` and `POINTER_LEAVE`, so the app cannot reliably click inside that system dialog.
 
-## Development loop
+## 4K stress-test notes
 
-Optional fast iteration script:
+The 4K stress client can force:
 
-```bash
-./scripts/dev_cycle.sh
+```text
+size=3840x2160
+force4k=1
 ```
 
-A typical manual loop:
+A heavy shader produced around:
+
+```text
+~4-5 FPS on Mali-G51
+```
+
+That does **not** mean the TV cannot handle 4K video. Video playback uses dedicated decode hardware. The stress client runs a fragment shader across 8.29 million pixels per frame, which is a very different workload.
+
+Use `wayland_egl` for normal interactive rendering.
+
+Use `wayland_egl_stress` only for experimentation.
+
+## Clean TV temporary files
 
 ```bash
-cd ~/disk/webos-wayland
-
-./scripts/build.sh
-./scripts/install_tv_lowspace.sh
-
 ssh root@192.168.2.121 '
 set +e
-luna-send -n 1 -f luna://com.webos.applicationManager/closeByAppId "{"id":"org.webosbrew.wayland"}"
+
+APP_ID="org.webosbrew.wayland"
+APP_DIR="/media/developer/apps/usr/palm/applications/$APP_ID"
+
+luna-send -n 1 -f luna://com.webos.applicationManager/closeByAppId "{\"id\":\"$APP_ID\"}" >/dev/null 2>&1
+killall wayland_egl_stress 2>/dev/null
+killall wayland_egl 2>/dev/null
 killall wayland_rect 2>/dev/null
 killall native_main 2>/dev/null
-rm -f /tmp/org.webosbrew.wayland.wayland_rect.log
+killall client 2>/dev/null
+
+rm -f /tmp/wayland_egl_stress
+rm -f /tmp/wayland_egl
+rm -f /tmp/wayland_rect
+rm -f /tmp/native_main
+rm -rf /tmp/webos-wayland-upload-org.webosbrew.wayland
 rm -f /tmp/org.webosbrew.wayland.native_main.log
+rm -f /tmp/org.webosbrew.wayland.client.log
+rm -f /tmp/org.webosbrew.wayland.wayland_rect.log
+
+if [ -d "$APP_DIR/bin" ]; then
+  rm -f "$APP_DIR/bin/wayland_egl_stress"
+  rm -f "$APP_DIR/bin/client"
+  ln -sf wayland_egl "$APP_DIR/bin/client"
+fi
+
+ls -lh "$APP_DIR/bin" 2>/dev/null || true
+ls -l "$APP_DIR/bin/client" 2>/dev/null || true
+df -h /tmp /media/developer /mnt/lg/appstore 2>/dev/null || df -h
 '
-
-./scripts/launch_tv.sh
-```
-
-## Safety notes
-
-Do not overwrite system partitions, kernel images, rootfs images, TV services, or platform binaries.
-
-This project only installs under:
-
-```text
-/media/developer/apps/usr/palm/applications/org.webosbrew.wayland
-```
-
-and writes temporary logs under:
-
-```text
-/tmp/org.webosbrew.wayland.native_main.log
-/tmp/org.webosbrew.wayland.wayland_rect.log
 ```
 
 ## Troubleshooting
 
-### `jailer` says `No such file or directory`
+### `No such file or directory` when launching native binary
 
-Check the binary ABI:
+Check ABI:
 
 ```bash
 file dist/org.webosbrew.wayland/bin/native_main
 readelf -l dist/org.webosbrew.wayland/bin/native_main | grep interpreter
 ```
 
-If it says `aarch64` or `/lib/ld-linux-aarch64.so.1`, it was built with the wrong compiler.
-
-Correct result:
+Correct:
 
 ```text
 ELF 32-bit LSB executable, ARM
 [Requesting program interpreter: /lib/ld-linux.so.3]
 ```
 
-### Surface appears for two seconds and then disappears
+Incorrect:
 
-This usually means the app was launched directly over SSH/root instead of as a foreground app through SAM.
+```text
+ELF 64-bit LSB executable, ARM aarch64
+[Requesting program interpreter: /lib/ld-linux-aarch64.so.1]
+```
 
-Launch with:
+### Surface appears briefly and disappears
+
+Launch through SAM, not direct SSH:
 
 ```bash
 ./scripts/launch_tv.sh
 ```
 
-or:
+### App does not appear to run after install
 
-```bash
-luna-send -n 1 -f luna://com.webos.applicationManager/launch '{"id":"org.webosbrew.wayland"}'
-```
-
-### App launches but no process appears
-
-Reboot the TV once after installing or modifying `appinfo.json`:
+Reboot once so SAM reloads app metadata:
 
 ```bash
 ssh root@192.168.2.121 'sync; reboot'
 ```
 
-After reboot:
+### No space left on device
 
-```bash
-./scripts/launch_tv.sh
-```
+The developer/appstore partition can be full.
 
-### `No space left on device`
+Use `/tmp` for temporary renderers and keep the installed app directory minimal.
 
 Clean temporary files:
 
 ```bash
 ssh root@192.168.2.121 '
 rm -rf /tmp/webos-wayland-upload-org.webosbrew.wayland
-rm -f /tmp/org.webosbrew.wayland.native_main.log
-rm -f /tmp/org.webosbrew.wayland.wayland_rect.log
+rm -f /tmp/wayland_egl_stress
+rm -f /tmp/org.webosbrew.wayland.*.log
 find /media/developer/apps/usr/palm/applications/org.webosbrew.wayland -name "*.new" -type f -delete 2>/dev/null || true
 df -h /media/developer /tmp 2>/dev/null || df -h
 '
-```
-
-Use:
-
-```bash
-./scripts/install_tv_lowspace.sh
-```
-
-Strip binaries if needed:
-
-```bash
-source ./.webos-sdk.env
-"$WEBOS_SDK/bin/arm-webos-linux-gnueabi-strip" dist/org.webosbrew.wayland/bin/native_main
-"$WEBOS_SDK/bin/arm-webos-linux-gnueabi-strip" dist/org.webosbrew.wayland/bin/wayland_rect
 ```
 
 ## GitHub
@@ -455,21 +623,19 @@ source ./.webos-sdk.env
 Repository:
 
 ```text
-https://github.com/cfernande1470/webos-wayland
+git@github.com:cfernande1470/webos-wayland.git
 ```
 
-Initial push:
+Push to `main`:
 
 ```bash
 cd ~/disk/webos-wayland
-
-cp /path/to/this/README.md README.md
 
 git init
 git branch -M main
 
 git add .
-git commit -m "Initial native webOS Wayland client"
+git commit -m "Initial native webOS Wayland EGL client"
 
 git remote remove origin 2>/dev/null || true
 git remote add origin git@github.com:cfernande1470/webos-wayland.git
@@ -477,10 +643,10 @@ git remote add origin git@github.com:cfernande1470/webos-wayland.git
 git push -u origin main
 ```
 
-If SSH auth is not configured, use HTTPS instead:
+If the remote already has commits:
 
 ```bash
-git remote set-url origin https://github.com/cfernande1470/webos-wayland.git
+git pull --rebase origin main
 git push -u origin main
 ```
 
@@ -488,4 +654,4 @@ git push -u origin main
 
 No license has been selected yet.
 
-Before publishing for reuse, add a `LICENSE` file. MIT is a reasonable default for this kind of small experimental native client.
+Add a `LICENSE` file before treating this as a reusable open-source project. MIT is a reasonable default for a small experimental native client.

@@ -1,0 +1,10 @@
+.webos-sdk.env
+dist/
+snapshots/
+*.backup
+*.working-*
+*.before-*
+*.tar.gz
+*.log
+.DS_Store
+*.swp
