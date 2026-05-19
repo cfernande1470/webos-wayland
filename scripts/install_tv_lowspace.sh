@@ -10,16 +10,16 @@ TMP="/tmp/webos-wayland-upload-$APP_ID"
 
 test -x "$OUT/bin/native_main"
 test -x "$OUT/bin/wayland_rect"
+test -x "$OUT/bin/wayland_egl"
 
 echo "===== LOCAL SIZE/ABI ====="
 ls -lh "$OUT/bin"
-file "$OUT/bin/native_main" "$OUT/bin/wayland_rect" "$OUT/bin/wayland_egl" 2>/dev/null || true
+file "$OUT/bin/"* || true
 
-echo
-echo "===== REMOTE PREP ====="
 ssh "$TV" "
 set +e
 luna-send -n 1 -f luna://com.webos.applicationManager/closeByAppId '{\"id\":\"$APP_ID\"}' >/dev/null 2>&1
+killall wayland_egl_stress 2>/dev/null
 killall wayland_egl 2>/dev/null
 killall wayland_rect 2>/dev/null
 killall native_main 2>/dev/null
@@ -30,26 +30,20 @@ mkdir -p '$TMP'
 mkdir -p '$REMOTE/bin'
 
 rm -f /tmp/org.webosbrew.wayland.native_main.log
-rm -f /tmp/org.webosbrew.wayland.wayland_rect.log
 rm -f /tmp/org.webosbrew.wayland.client.log
-
-echo 'DF before:'
-df -h /media/developer /tmp 2>/dev/null || df -h
+rm -f /tmp/org.webosbrew.wayland.wayland_rect.log
 "
 
-echo
-echo "===== UPLOAD TO /tmp ====="
 scp "$OUT/appinfo.json" "$TV:$TMP/appinfo.json"
 scp "$OUT/icon.png" "$TV:$TMP/icon.png"
 scp "$OUT/bin/native_main" "$TV:$TMP/native_main"
 scp "$OUT/bin/wayland_rect" "$TV:$TMP/wayland_rect"
+scp "$OUT/bin/wayland_egl" "$TV:$TMP/wayland_egl"
 
-if [ -x "$OUT/bin/wayland_egl" ]; then
-  scp "$OUT/bin/wayland_egl" "$TV:$TMP/wayland_egl"
+if [ -x "$OUT/bin/wayland_egl_stress" ]; then
+  scp "$OUT/bin/wayland_egl_stress" "$TV:$TMP/wayland_egl_stress"
 fi
 
-echo
-echo "===== LOW SPACE INSTALL ====="
 ssh "$TV" "
 set -e
 
@@ -57,6 +51,7 @@ REMOTE='$REMOTE'
 TMP='$TMP'
 
 set +e
+killall wayland_egl_stress 2>/dev/null
 killall wayland_egl 2>/dev/null
 killall wayland_rect 2>/dev/null
 killall native_main 2>/dev/null
@@ -66,6 +61,7 @@ set -e
 rm -f '$REMOTE/bin/native_main'
 rm -f '$REMOTE/bin/wayland_rect'
 rm -f '$REMOTE/bin/wayland_egl'
+rm -f '$REMOTE/bin/wayland_egl_stress'
 rm -f '$REMOTE/bin/client'
 rm -f '$REMOTE/appinfo.json'
 rm -f '$REMOTE/icon.png'
@@ -73,19 +69,22 @@ sync
 
 cp '$TMP/native_main' '$REMOTE/bin/native_main'
 cp '$TMP/wayland_rect' '$REMOTE/bin/wayland_rect'
+cp '$TMP/wayland_egl' '$REMOTE/bin/wayland_egl'
 
-if [ -f '$TMP/wayland_egl' ]; then
-  cp '$TMP/wayland_egl' '$REMOTE/bin/wayland_egl'
-  ln -sf wayland_egl '$REMOTE/bin/client'
+if [ -f '$TMP/wayland_egl_stress' ]; then
+  cp '$TMP/wayland_egl_stress' '$REMOTE/bin/wayland_egl_stress'
+  ln -sf wayland_egl_stress '$REMOTE/bin/client'
 else
-  ln -sf wayland_rect '$REMOTE/bin/client'
+  ln -sf wayland_egl '$REMOTE/bin/client'
 fi
 
 cp '$TMP/appinfo.json' '$REMOTE/appinfo.json'
 cp '$TMP/icon.png' '$REMOTE/icon.png'
 
-chmod 755 '$REMOTE/bin/native_main' '$REMOTE/bin/wayland_rect'
-[ -f '$REMOTE/bin/wayland_egl' ] && chmod 755 '$REMOTE/bin/wayland_egl'
+chmod 755 '$REMOTE/bin/native_main'
+chmod 755 '$REMOTE/bin/wayland_rect'
+chmod 755 '$REMOTE/bin/wayland_egl'
+[ -f '$REMOTE/bin/wayland_egl_stress' ] && chmod 755 '$REMOTE/bin/wayland_egl_stress'
 chmod 644 '$REMOTE/appinfo.json' '$REMOTE/icon.png'
 
 rm -rf '$TMP'
@@ -93,15 +92,11 @@ sync
 
 echo '===== INSTALLED ====='
 ls -lh '$REMOTE/bin'
-file '$REMOTE/bin/native_main' '$REMOTE/bin/wayland_rect' '$REMOTE/bin/wayland_egl' 2>/dev/null || true
+echo
 echo 'client symlink:'
-ls -l '$REMOTE/bin/client' || true
-
+ls -l '$REMOTE/bin/client'
 echo
-echo 'DF after:'
+file '$REMOTE/bin/'* 2>/dev/null || true
+echo
 df -h /media/developer /tmp 2>/dev/null || df -h
-
-echo
-echo '===== STATUS ====='
-luna-send -n 1 -f luna://com.webos.applicationManager/getAppLoadStatus '{\"appId\":\"org.webosbrew.wayland\"}' || true
 "

@@ -60,6 +60,8 @@ int main(int argc, char **argv) {
     setenv("WAYLAND_DISPLAY", "wayland-0", 1);
     setenv("DISPLAY_ID", "0", 1);
     setenv("EGL_PLATFORM", "wayland", 1);
+    setenv("STRESS_FORCE_4K", "1", 0);
+    setenv("STRESS_SWAP_INTERVAL", "1", 0);
 
     char bin_dir[PATH_MAX];
     find_bin_dir(bin_dir, sizeof(bin_dir));

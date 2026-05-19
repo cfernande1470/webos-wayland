@@ -23,7 +23,7 @@ echo
 echo "===== SDK CHECK ====="
 find "$SYSROOT/usr/include" -maxdepth 3 -name 'wayland-client.h' -print | head || true
 find "$SYSROOT/usr/include" -maxdepth 3 -name 'wayland-egl.h' -print | head || true
-find "$SYSROOT/usr/include" -maxdepth 3 \( -name 'egl.h' -o -name 'gl2.h' \) -print | head || true
+find "$SYSROOT/usr/include" -maxdepth 4 \( -name 'egl.h' -o -name 'gl2.h' \) -print | head || true
 find "$SYSROOT/usr/lib" -maxdepth 2 \( -name 'libwayland-egl*' -o -name 'libEGL*' -o -name 'libGLESv2*' \) -print | head -20 || true
 
 echo
@@ -46,10 +46,19 @@ echo "===== BUILD wayland_egl ====="
   -o "$OUT/bin/wayland_egl" \
   -lwayland-client -lwayland-egl -lEGL -lGLESv2 -lm
 
+if [ -f "$ROOT/native/wayland_egl_stress.c" ]; then
+  echo
+  echo "===== BUILD wayland_egl_stress ====="
+  "$CC" -O2 -Wall -Wextra \
+    "$ROOT/native/wayland_egl_stress.c" \
+    -o "$OUT/bin/wayland_egl_stress" \
+    -lwayland-client -lwayland-egl -lEGL -lGLESv2 -lm
+fi
+
 cat > "$OUT/appinfo.json" <<JSON
 {
   "id": "$APP_ID",
-  "version": "0.0.6-egl",
+  "version": "0.0.7",
   "vendor": "local",
   "type": "native",
   "main": "bin/native_main",
@@ -66,22 +75,24 @@ iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAA
 B64
 
 chmod 755 "$OUT/bin/native_main" "$OUT/bin/wayland_rect" "$OUT/bin/wayland_egl"
+[ -f "$OUT/bin/wayland_egl_stress" ] && chmod 755 "$OUT/bin/wayland_egl_stress"
 
-# Reduce size for the TV developer partition.
 "$STRIP" --strip-unneeded "$OUT/bin/native_main" || true
 "$STRIP" --strip-unneeded "$OUT/bin/wayland_rect" || true
 "$STRIP" --strip-unneeded "$OUT/bin/wayland_egl" || true
+[ -f "$OUT/bin/wayland_egl_stress" ] && "$STRIP" --strip-unneeded "$OUT/bin/wayland_egl_stress" || true
 
 echo
 echo "===== ABI RESULT ====="
-file "$OUT/bin/native_main" "$OUT/bin/wayland_rect" "$OUT/bin/wayland_egl"
-readelf -l "$OUT/bin/native_main" | grep -i interpreter || true
-readelf -l "$OUT/bin/wayland_rect" | grep -i interpreter || true
-readelf -l "$OUT/bin/wayland_egl" | grep -i interpreter || true
+file "$OUT/bin/"* || true
+for f in "$OUT/bin/"*; do
+  [ -f "$f" ] || continue
+  readelf -l "$f" | grep -i interpreter || true
+done
 
 echo
 echo "===== HARD ABI GUARD ====="
-if file "$OUT/bin/native_main" "$OUT/bin/wayland_rect" "$OUT/bin/wayland_egl" | grep -q 'aarch64'; then
+if file "$OUT/bin/"* | grep -q 'aarch64'; then
   echo "ERROR: aarch64 binary detected. Do not install."
   exit 99
 fi
@@ -94,6 +105,13 @@ fi
 if ! file "$OUT/bin/wayland_egl" | grep -q 'ELF 32-bit.*ARM'; then
   echo "ERROR: wayland_egl is not ARM 32-bit."
   exit 97
+fi
+
+if [ -f "$OUT/bin/wayland_egl_stress" ]; then
+  if ! file "$OUT/bin/wayland_egl_stress" | grep -q 'ELF 32-bit.*ARM'; then
+    echo "ERROR: wayland_egl_stress is not ARM 32-bit."
+    exit 96
+  fi
 fi
 
 echo "OK: ARM/webOS binaries generated."

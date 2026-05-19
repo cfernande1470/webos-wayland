@@ -1,6 +1,6 @@
 {
   "id": "org.webosbrew.wayland",
-  "version": "0.0.6-egl",
+  "version": "0.0.7",
   "vendor": "local",
   "type": "native",
   "main": "bin/native_main",
