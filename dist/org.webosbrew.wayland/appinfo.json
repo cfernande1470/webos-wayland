@@ -1,10 +1,10 @@
 {
   "id": "org.webosbrew.wayland",
-  "version": "0.0.5",
+  "version": "0.0.6-egl",
   "vendor": "local",
   "type": "native",
   "main": "bin/native_main",
-  "title": "Wayland Native Lab",
+  "title": "Wayland EGL Native Lab",
   "icon": "icon.png",
   "noSplashOnLaunch": true,
   "spinnerOnLaunch": false,
