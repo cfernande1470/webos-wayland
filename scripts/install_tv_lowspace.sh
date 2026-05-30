@@ -2,7 +2,7 @@
 set -euo pipefail
 
 TV="${TV:-root@192.168.2.121}"
-APP_ID="org.webosbrew.wayland"
+APP_ID="${APP_ID:-org.webosbrew.wayland}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$ROOT/dist/$APP_ID"
 REMOTE="/media/developer/apps/usr/palm/applications/$APP_ID"
@@ -29,9 +29,9 @@ rm -rf '$TMP'
 mkdir -p '$TMP'
 mkdir -p '$REMOTE/bin'
 
-rm -f /tmp/org.webosbrew.wayland.native_main.log
-rm -f /tmp/org.webosbrew.wayland.client.log
-rm -f /tmp/org.webosbrew.wayland.wayland_rect.log
+rm -f "/tmp/${APP_ID}.native_main.log"
+rm -f "/tmp/${APP_ID}.client.log"
+rm -f "/tmp/${APP_ID}.wayland_rect.log"
 "
 
 scp "$OUT/appinfo.json" "$TV:$TMP/appinfo.json"
@@ -39,6 +39,7 @@ scp "$OUT/icon.png" "$TV:$TMP/icon.png"
 scp "$OUT/bin/native_main" "$TV:$TMP/native_main"
 scp "$OUT/bin/wayland_rect" "$TV:$TMP/wayland_rect"
 scp "$OUT/bin/wayland_egl" "$TV:$TMP/wayland_egl"
+scp "$OUT/bin/android_backend" "$TV:$TMP/android_backend"
 
 if [ -x "$OUT/bin/wayland_egl_stress" ]; then
   scp "$OUT/bin/wayland_egl_stress" "$TV:$TMP/wayland_egl_stress"
@@ -63,6 +64,7 @@ rm -f '$REMOTE/bin/wayland_rect'
 rm -f '$REMOTE/bin/wayland_egl'
 rm -f '$REMOTE/bin/wayland_egl_stress'
 rm -f '$REMOTE/bin/client'
+rm -f '$REMOTE/bin/android_backend'
 rm -f '$REMOTE/appinfo.json'
 rm -f '$REMOTE/icon.png'
 sync
@@ -70,6 +72,7 @@ sync
 cp '$TMP/native_main' '$REMOTE/bin/native_main'
 cp '$TMP/wayland_rect' '$REMOTE/bin/wayland_rect'
 cp '$TMP/wayland_egl' '$REMOTE/bin/wayland_egl'
+cp '$TMP/android_backend' '$REMOTE/bin/android_backend'
 
 if [ -f '$TMP/wayland_egl_stress' ]; then
   cp '$TMP/wayland_egl_stress' '$REMOTE/bin/wayland_egl_stress'
@@ -84,6 +87,7 @@ cp '$TMP/icon.png' '$REMOTE/icon.png'
 chmod 755 '$REMOTE/bin/native_main'
 chmod 755 '$REMOTE/bin/wayland_rect'
 chmod 755 '$REMOTE/bin/wayland_egl'
+chmod 755 '$REMOTE/bin/android_backend'
 [ -f '$REMOTE/bin/wayland_egl_stress' ] && chmod 755 '$REMOTE/bin/wayland_egl_stress'
 chmod 644 '$REMOTE/appinfo.json' '$REMOTE/icon.png'
 

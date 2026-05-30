@@ -7,10 +7,15 @@
 #include <limits.h>
 #include <time.h>
 
+#ifndef APP_ID
 #define APP_ID "org.webosbrew.wayland"
+#endif
 
 static void log_line(const char *msg) {
-    FILE *f = fopen("/tmp/org.webosbrew.wayland.native_main.log", "a");
+    char path[PATH_MAX];
+    snprintf(path, sizeof(path), "/tmp/%s.native_main.log", APP_ID);
+
+    FILE *f = fopen(path, "a");
     if (f) {
         time_t t = time(NULL);
         fprintf(f, "[%ld] %s\n", (long)t, msg);
@@ -50,7 +55,9 @@ int main(int argc, char **argv) {
     (void)argc;
     (void)argv;
 
-    unlink("/tmp/org.webosbrew.wayland.native_main.log");
+    char native_log[PATH_MAX];
+    snprintf(native_log, sizeof(native_log), "/tmp/%s.native_main.log", APP_ID);
+    unlink(native_log);
     log_line("native_main client-wrapper started");
 
     unsetenv("LD_PRELOAD");
@@ -66,22 +73,27 @@ int main(int argc, char **argv) {
     char bin_dir[PATH_MAX];
     find_bin_dir(bin_dir, sizeof(bin_dir));
 
-    int fd = open("/tmp/org.webosbrew.wayland.client.log",
-                  O_CREAT | O_WRONLY | O_APPEND, 0644);
+    char client_log[PATH_MAX];
+    snprintf(client_log, sizeof(client_log), "/tmp/%s.client.log", APP_ID);
+
+    int fd = open(client_log, O_CREAT | O_WRONLY | O_APPEND, 0644);
     if (fd >= 0) {
         dup2(fd, 1);
         dup2(fd, 2);
         close(fd);
     }
 
+    char android_backend[PATH_MAX];
     char client[PATH_MAX];
     char egl[PATH_MAX];
     char shm[PATH_MAX];
 
+    snprintf(android_backend, sizeof(android_backend), "%s/android_backend", bin_dir);
     snprintf(client, sizeof(client), "%s/client", bin_dir);
     snprintf(egl, sizeof(egl), "%s/wayland_egl", bin_dir);
     snprintf(shm, sizeof(shm), "%s/wayland_rect", bin_dir);
 
+    try_exec(android_backend);
     try_exec(client);
     try_exec(egl);
     try_exec(shm);

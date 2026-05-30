@@ -8,7 +8,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+#include <signal.h>
+#include <sys/stat.h>
 #include <time.h>
+#include <errno.h>
 
 #ifndef WL_SHM_FORMAT_XRGB8888
 #define WL_SHM_FORMAT_XRGB8888 1
@@ -57,6 +60,7 @@ struct app {
     int frame;
 
     int theme;
+    int android_mode;
     int win_x;
     int win_y;
     int pointer_x;
@@ -76,6 +80,71 @@ static int clampi(int v, int lo, int hi) {
     if (v < lo) return lo;
     if (v > hi) return hi;
     return v;
+}
+
+static int path_executable(const char *path) {
+    return path && access(path, X_OK) == 0;
+}
+
+static void launch_android_sidecar_once(const char *app_id) {
+    if (!app_id || strcmp(app_id, "org.webosbrew.android") != 0) {
+        return;
+    }
+
+    const char *usb = getenv("USB");
+    const char *side = getenv("SIDE");
+    const char *launcher = NULL;
+    char launcher_path[512];
+    char log_path[512];
+
+    if (!usb || !*usb) usb = "/media/internal/android-usb";
+    if (!side || !*side) side = "/media/internal/android-usb/android-sidecar";
+
+    snprintf(launcher_path, sizeof(launcher_path), "%s/bin/try-zygote-start-system-server-v2.sh", side);
+    if (path_executable(launcher_path)) {
+        launcher = launcher_path;
+    } else {
+        snprintf(launcher_path, sizeof(launcher_path), "%s/bin/restart.sh", side);
+        if (path_executable(launcher_path)) {
+            launcher = launcher_path;
+        }
+    }
+
+    if (!launcher) {
+        fprintf(stderr, "ANDROID_SIDEcar launcher missing usb=%s side=%s\n", usb, side);
+        return;
+    }
+
+    snprintf(log_path, sizeof(log_path), "/tmp/%s.android_backend.launch.log", app_id);
+
+    signal(SIGCHLD, SIG_IGN);
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        fprintf(stderr, "ANDROID_SIDEcar fork failed: %s\n", strerror(errno));
+        return;
+    }
+
+    if (pid == 0) {
+        int fd = open(log_path, O_CREAT | O_WRONLY | O_APPEND, 0644);
+        if (fd >= 0) {
+            dup2(fd, STDOUT_FILENO);
+            dup2(fd, STDERR_FILENO);
+            close(fd);
+        }
+
+        setsid();
+        setenv("USB", usb, 1);
+        setenv("SIDE", side, 1);
+        setenv("FORMAT_USB", "0", 1);
+
+        fprintf(stderr, "ANDROID_SIDEcar exec launcher=%s USB=%s SIDE=%s\n", launcher, usb, side);
+        execl("/bin/sh", "sh", launcher, (char *)NULL);
+        fprintf(stderr, "ANDROID_SIDEcar exec failed: %s\n", strerror(errno));
+        _exit(127);
+    }
+
+    fprintf(stderr, "ANDROID_SIDEcar launch pid=%ld launcher=%s\n", (long)pid, launcher);
 }
 
 static int create_tmpfile(size_t size) {
@@ -203,6 +272,41 @@ static void paint(struct app *a, struct shm_buf *b) {
     uint32_t accent;
     uint32_t panel;
     uint32_t white = rgb(235, 235, 235);
+
+    if (a->android_mode) {
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                p[y * w + x] = rgb(4, 6, 10);
+            }
+        }
+
+        rect(p, w, h, 0, 0, w, 84, rgb(8, 10, 16));
+        rect(p, w, h, 0, 82, w, 2, rgb(100, 220, 130));
+
+        int card_w = 820;
+        int card_h = 260;
+        int cx = clampi((w - card_w) / 2, 40, w - card_w - 40);
+        int cy = clampi((h - card_h) / 2, 100, h - card_h - 100);
+        rect(p, w, h, cx, cy, card_w, card_h, rgb(20, 24, 34));
+        outline(p, w, h, cx, cy, card_w, card_h, 4, rgb(100, 220, 130));
+
+        rect(p, w, h, cx + 44, cy + 44, card_w - 88, 28, rgb(100, 220, 130));
+        rect(p, w, h, cx + 44, cy + 104, card_w - 88, 14, rgb(60, 60, 68));
+        rect(p, w, h, cx + 44, cy + 132, card_w - 120, 14, rgb(60, 60, 68));
+        rect(p, w, h, cx + 44, cy + 172, card_w - 200, 28, rgb(40, 120, 255));
+        rect(p, w, h, cx + 44, cy + 172, (a->frame * 11) % (card_w - 200), 28, rgb(100, 220, 130));
+
+        if (a->have_pointer) {
+            int px = clampi(a->pointer_x, 0, w - 1);
+            int py = clampi(a->pointer_y, 0, h - 1);
+            rect(p, w, h, px - 10, py - 2, 20, 4, white);
+            rect(p, w, h, px - 2, py - 10, 4, 20, white);
+            rect(p, w, h, px - 4, py - 4, 8, 8, rgb(100, 220, 130));
+        }
+
+        outline(p, w, h, 0, 0, w, h, 4, rgb(16, 20, 28));
+        return;
+    }
 
     if (a->theme % 3 == 0) {
         bg1 = rgb(10, 18, 36);
@@ -654,9 +758,12 @@ int main(int argc, char **argv) {
     const char *wld = getenv("WAYLAND_DISPLAY");
     const char *app_id = getenv("APP_ID");
     if (!app_id) app_id = "org.webosbrew.wayland";
+    a.android_mode = strcmp(app_id, "org.webosbrew.android") == 0;
 
     fprintf(stderr, "wayland_rect_v3 start XDG_RUNTIME_DIR=%s WAYLAND_DISPLAY=%s APP_ID=%s\n",
             xdg ? xdg : "(null)", wld ? wld : "(null)", app_id);
+
+    launch_android_sidecar_once(app_id);
 
     a.display = wl_display_connect(NULL);
     if (!a.display) {

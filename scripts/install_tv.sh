@@ -2,13 +2,14 @@
 set -euo pipefail
 
 TV="${TV:-root@192.168.2.121}"
-APP_ID="org.webosbrew.wayland"
+APP_ID="${APP_ID:-org.webosbrew.wayland}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$ROOT/dist/$APP_ID"
 REMOTE="/media/developer/apps/usr/palm/applications/$APP_ID"
 
 test -x "$OUT/bin/native_main"
 test -x "$OUT/bin/wayland_rect"
+test -e "$OUT/bin/android_backend"
 
 ssh "$TV" "
 set +e
@@ -24,6 +25,7 @@ scp -r "$OUT/"* "$TV:$REMOTE/"
 ssh "$TV" "
 set -e
 chmod 755 '$REMOTE/bin/native_main' '$REMOTE/bin/wayland_rect'
+chmod 755 '$REMOTE/bin/android_backend' 2>/dev/null || true
 chmod 644 '$REMOTE/appinfo.json' '$REMOTE/icon.png'
 
 echo '===== INSTALLED FILES ====='

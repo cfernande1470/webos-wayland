@@ -62,6 +62,18 @@ client -> wayland_rect      # CPU / wl_shm fallback
 client -> /tmp/...          # temporary experimental renderer
 ```
 
+## Android shell experiment
+
+The same native webOS app shell can also be used as a launcher surface for an `android` package:
+
+- build with `scripts/build_android.sh`;
+- install with `scripts/install_tv_android.sh`;
+- launch with `scripts/launch_tv_android.sh`.
+
+That package uses `APP_ID=org.webosbrew.android` and still keeps the normal Wayland fallbacks, but it also probes `bin/android_backend` before `bin/client`.
+
+For the `android` package, `bin/android_backend` is now the bootstrap path. It tries to launch the Android sidecar if the USB payload is present and then shows a non-demo launch surface instead of the normal triangle client. The default `wayland` package still links `android_backend` back to `client`, so nothing changes for the existing Wayland app.
+
 ## Renderers
 
 ### `wayland_rect`

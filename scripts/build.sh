@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_ID="org.webosbrew.wayland"
+APP_ID="${APP_ID:-org.webosbrew.wayland}"
+APP_TITLE="${APP_TITLE:-Wayland EGL Native Lab}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$ROOT/dist/$APP_ID"
 
@@ -29,6 +30,7 @@ find "$SYSROOT/usr/lib" -maxdepth 2 \( -name 'libwayland-egl*' -o -name 'libEGL*
 echo
 echo "===== BUILD native_main ====="
 "$CC" -O2 -Wall -Wextra \
+  -DAPP_ID=\"${APP_ID}\" \
   "$ROOT/native/native_main.c" \
   -o "$OUT/bin/native_main"
 
@@ -62,7 +64,7 @@ cat > "$OUT/appinfo.json" <<JSON
   "vendor": "local",
   "type": "native",
   "main": "bin/native_main",
-  "title": "Wayland EGL Native Lab",
+  "title": "$APP_TITLE",
   "icon": "icon.png",
   "noSplashOnLaunch": true,
   "spinnerOnLaunch": false,
@@ -76,6 +78,12 @@ B64
 
 chmod 755 "$OUT/bin/native_main" "$OUT/bin/wayland_rect" "$OUT/bin/wayland_egl"
 [ -f "$OUT/bin/wayland_egl_stress" ] && chmod 755 "$OUT/bin/wayland_egl_stress"
+ln -sf wayland_egl "$OUT/bin/client"
+if [ "$APP_ID" = "org.webosbrew.android" ]; then
+  ln -sf wayland_rect "$OUT/bin/android_backend"
+else
+  ln -sf client "$OUT/bin/android_backend"
+fi
 
 "$STRIP" --strip-unneeded "$OUT/bin/native_main" || true
 "$STRIP" --strip-unneeded "$OUT/bin/wayland_rect" || true
