@@ -61,6 +61,7 @@ struct app {
 
     int theme;
     int android_mode;
+    int android_ready;
     int win_x;
     int win_y;
     int pointer_x;
@@ -84,6 +85,11 @@ static int clampi(int v, int lo, int hi) {
 
 static int path_executable(const char *path) {
     return path && access(path, X_OK) == 0;
+}
+
+static int android_sidecar_ready(void) {
+    return access("/media/internal/android-usb/android-sidecar/run/system_server.pid", R_OK) == 0 ||
+           access("/media/internal/android-usb/android-sidecar/run/zygote64.pid", R_OK) == 0;
 }
 
 static void launch_android_sidecar_once(const char *app_id) {
@@ -145,6 +151,40 @@ static void launch_android_sidecar_once(const char *app_id) {
     }
 
     fprintf(stderr, "ANDROID_SIDEcar launch pid=%ld launcher=%s\n", (long)pid, launcher);
+}
+
+static void rect(uint32_t *p, int sw, int sh, int x, int y, int w, int h, uint32_t c);
+static void outline(uint32_t *p, int sw, int sh, int x, int y, int w, int h, int t, uint32_t c);
+
+static void draw_android_robot(uint32_t *p, int w, int h, int cx, int cy, int scale, uint32_t green, uint32_t dark, uint32_t white) {
+    int bw = 140 * scale / 100;
+    int bh = 180 * scale / 100;
+    int hx = cx - bw / 2;
+    int hy = cy - bh / 2;
+    int head_w = 110 * scale / 100;
+    int head_h = 80 * scale / 100;
+    int body_w = 140 * scale / 100;
+    int body_h = 110 * scale / 100;
+
+    rect(p, w, h, hx + 24, hy - 54, 6, 34, green);
+    rect(p, w, h, hx + bw - 30, hy - 54, 6, 34, green);
+    rect(p, w, h, hx, hy, bw, bh, dark);
+    outline(p, w, h, hx, hy, bw, bh, 6, green);
+
+    rect(p, w, h, cx - head_w / 2, hy - 28, head_w, head_h, green);
+    outline(p, w, h, cx - head_w / 2, hy - 28, head_w, head_h, 5, white);
+
+    rect(p, w, h, cx - body_w / 2, hy + 60, body_w, body_h, green);
+    outline(p, w, h, cx - body_w / 2, hy + 60, body_w, body_h, 5, white);
+
+    rect(p, w, h, cx - 44 * scale / 100, hy - 6, 18 * scale / 100, 18 * scale / 100, dark);
+    rect(p, w, h, cx + 26 * scale / 100, hy - 6, 18 * scale / 100, 18 * scale / 100, dark);
+    rect(p, w, h, cx - 36 * scale / 100, hy + 44 * scale / 100, 74 * scale / 100, 10 * scale / 100, dark);
+
+    rect(p, w, h, cx - 110 * scale / 100, hy + 76, 10 * scale / 100, 84 * scale / 100, green);
+    rect(p, w, h, cx + 100 * scale / 100, hy + 76, 10 * scale / 100, 84 * scale / 100, green);
+    rect(p, w, h, cx - 108 * scale / 100, hy + 146, 28 * scale / 100, 12 * scale / 100, white);
+    rect(p, w, h, cx + 80 * scale / 100, hy + 146, 28 * scale / 100, 12 * scale / 100, white);
 }
 
 static int create_tmpfile(size_t size) {
@@ -274,37 +314,50 @@ static void paint(struct app *a, struct shm_buf *b) {
     uint32_t white = rgb(235, 235, 235);
 
     if (a->android_mode) {
+        a->android_ready = android_sidecar_ready();
+
         for (int y = 0; y < h; y++) {
             for (int x = 0; x < w; x++) {
-                p[y * w + x] = rgb(4, 6, 10);
+                p[y * w + x] = rgb(5, 8, 12);
             }
         }
 
-        rect(p, w, h, 0, 0, w, 84, rgb(8, 10, 16));
-        rect(p, w, h, 0, 82, w, 2, rgb(100, 220, 130));
+        uint32_t green = rgb(105, 230, 120);
+        uint32_t dark = rgb(18, 24, 30);
+        uint32_t white = rgb(242, 242, 242);
+        uint32_t blue = rgb(72, 138, 255);
 
-        int card_w = 820;
-        int card_h = 260;
-        int cx = clampi((w - card_w) / 2, 40, w - card_w - 40);
-        int cy = clampi((h - card_h) / 2, 100, h - card_h - 100);
-        rect(p, w, h, cx, cy, card_w, card_h, rgb(20, 24, 34));
-        outline(p, w, h, cx, cy, card_w, card_h, 4, rgb(100, 220, 130));
+        rect(p, w, h, 0, 0, w, 88, rgb(9, 12, 18));
+        rect(p, w, h, 0, 86, w, 3, green);
 
-        rect(p, w, h, cx + 44, cy + 44, card_w - 88, 28, rgb(100, 220, 130));
-        rect(p, w, h, cx + 44, cy + 104, card_w - 88, 14, rgb(60, 60, 68));
-        rect(p, w, h, cx + 44, cy + 132, card_w - 120, 14, rgb(60, 60, 68));
-        rect(p, w, h, cx + 44, cy + 172, card_w - 200, 28, rgb(40, 120, 255));
-        rect(p, w, h, cx + 44, cy + 172, (a->frame * 11) % (card_w - 200), 28, rgb(100, 220, 130));
+        int card_w = 1020;
+        int card_h = 420;
+        int cx = clampi((w - card_w) / 2, 60, w - card_w - 60);
+        int cy = clampi((h - card_h) / 2, 120, h - card_h - 120);
+        rect(p, w, h, cx, cy, card_w, card_h, rgb(16, 20, 28));
+        outline(p, w, h, cx, cy, card_w, card_h, 4, green);
+
+        draw_android_robot(p, w, h, cx + 190, cy + 210, 150, green, dark, white);
+
+        rect(p, w, h, cx + 360, cy + 82, 520, 42, green);
+        rect(p, w, h, cx + 360, cy + 82, a->android_ready ? 520 : (a->frame * 18) % 520, 42, blue);
+        rect(p, w, h, cx + 360, cy + 150, 520, 18, rgb(54, 60, 68));
+        rect(p, w, h, cx + 360, cy + 184, 430, 18, rgb(54, 60, 68));
+        rect(p, w, h, cx + 360, cy + 218, 470, 18, rgb(54, 60, 68));
+        rect(p, w, h, cx + 360, cy + 266, 360, 54, green);
+        rect(p, w, h, cx + 360, cy + 266, a->android_ready ? 360 : (a->frame * 9) % 360, 54, blue);
+
+        rect(p, w, h, cx + 360, cy + 354, 520, 6, rgb(54, 60, 68));
+        rect(p, w, h, cx + 360, cy + 354, a->android_ready ? 520 : (a->frame * 13) % 520, 6, green);
 
         if (a->have_pointer) {
             int px = clampi(a->pointer_x, 0, w - 1);
             int py = clampi(a->pointer_y, 0, h - 1);
             rect(p, w, h, px - 10, py - 2, 20, 4, white);
             rect(p, w, h, px - 2, py - 10, 4, 20, white);
-            rect(p, w, h, px - 4, py - 4, 8, 8, rgb(100, 220, 130));
         }
 
-        outline(p, w, h, 0, 0, w, h, 4, rgb(16, 20, 28));
+        outline(p, w, h, 0, 0, w, h, 4, green);
         return;
     }
 
