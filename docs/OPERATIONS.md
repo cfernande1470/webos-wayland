@@ -49,6 +49,15 @@ This performs:
 build -> targeted install -> SAM launch -> status/log output
 ```
 
+The build emits `appinfo.json` and `packageinfo.json`. The installer updates the
+matching application and package directories atomically so a subsequent SAM
+scan has complete metadata.
+
+The deployment directories are normalized to mode `755`. SAM launches these
+native applications through `jailer` as the unprivileged `prisoner` user; a
+directory without execute permission for that user makes an existing binary
+appear as `No such file or directory`.
+
 Override the TV without editing scripts:
 
 ```bash
@@ -81,8 +90,9 @@ binary from the application directory.
 
 ## SAM registration
 
-Direct file installation does not always trigger an application metadata
-rescan. Symptoms are:
+Direct file installation does not notify an already running SAM process. The
+installer writes the required package metadata, but the first install can still
+require one SAM restart or TV reboot. Symptoms are:
 
 - the Luna launch call returns no useful output;
 - no process starts;
@@ -96,6 +106,11 @@ Reboot once after first installation:
 
 Do not reboot during firmware updates, storage repair, or other critical TV
 operations.
+
+`scripts/package_ipk.sh` creates a standard IPK for inspection or firmware that
+accepts developer packages. The audited commercial firmware rejected the
+unsigned IPK during verification, so IPK installation is not the deployment
+fallback for this rooted target.
 
 ## Direct smoke test
 
@@ -137,6 +152,24 @@ df -h / /tmp /media/developer
 uptime
 '
 ```
+
+Lifecycle-specific log markers are:
+
+```text
+WEBOS_SHELL_BOUND
+WEBOS_SHELL_ATTACHED
+WEBOS_SHELL_STATE
+WEBOS_SHELL_EXPOSED
+WEBOS_SHELL_VISIBILITY
+WEBOS_SHELL_CLOSE
+```
+
+`WEBOS_SHELL_FALLBACK` means the renderer continued with core `wl_shell`.
+
+The audited firmware requires an SSH pseudo-terminal for remote `luna-send`
+calls. The launch, status, stop, and installer scripts therefore use `ssh -tt`
+for commands that call Luna. They also recognize executable paths prefixed by
+`/var/palm/jail/...` when reporting or stopping SAM-owned processes.
 
 ## Storage
 

@@ -99,6 +99,32 @@ The changes preserve frame rate and slightly reduce measured CPU time within
 normal run-to-run variance. The important verified improvements are correct
 input binding, stable launcher identity, and the compositor opacity hint.
 
+## webOS shell lifecycle integration
+
+The target advertises `wl_webos_shell` version 1. The renderers now bind the
+official SDK interface while retaining the core `wl_shell` fallback. Live
+hardware validation produced:
+
+```text
+WEBOS_SHELL_BOUND advertised=1 bound=1
+WEBOS_SHELL_ATTACHED version=1 app_id=org.webosbrew.wayland
+WEBOS_SHELL_STATE state=3
+WEBOS_SHELL_EXPOSED rectangles=1 visible=1
+```
+
+A SAM-managed lifecycle test opened HDMI and moved the renderer to minimized
+state. It logged `WEBOS_SHELL_VISIBILITY visible=0`, lost keyboard focus,
+remained alive, and stopped at frame 2580 for the entire observation interval.
+This verifies that obscured rendering is suspended by compositor lifecycle
+events rather than by polling or a timer.
+
+The integration also requests the default webOS key mask plus Back and Exit,
+and maps the protocol close event to a clean event-loop exit. Foreground and
+close behavior was tested through SAM: relaunching returned the app to
+fullscreen state with keyboard focus, and `closeByAppId` removed every jailed
+application process. This firmware started a fresh native instance when the
+minimized app was launched again rather than resuming the old one.
+
 ## Launcher and deployment changes
 
 The original launcher tried `android_backend` before `client` for every app ID.
@@ -140,6 +166,13 @@ normal shutdown.
 - `.webos-sdk.env.example` documents local configuration without committing a
   machine-specific path.
 - Legacy installer entry points delegate to one canonical implementation.
+- Builds now generate package metadata required by the SAM developer tree.
+- A standard, stress-opt-in IPK packager is available for inspection and
+  compatible developer firmware.
+- Deployment normalizes directory traversal permissions for SAM's jailed
+  `prisoner` user and recognizes jail-prefixed executable paths.
+- Remote Luna operations allocate the pseudo-terminal required by the audited
+  firmware.
 - Shell scripts pass `bash -n`.
 - GCC 12.2 `-fanalyzer` reports no findings.
 - The renderer sources compile cleanly under the project's normal warning set.
@@ -151,13 +184,6 @@ normal shutdown.
 The normal demo intentionally rotates continuously. A real mostly-static UI
 should request frames only while an animation is active or after content/input
 changes. This can save more power than shader micro-optimization.
-
-### webOS shell protocol
-
-`wl_webos_shell` could add exposed-region, close, state, and key-mask handling.
-The core `wl_shell` route remains in place because it is the hardware-verified
-SAM path. Any migration should retain a fallback and be tested across launch,
-backgrounding, system dialogs, and close events.
 
 ### Video
 

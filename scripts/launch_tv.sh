@@ -11,17 +11,18 @@ case "$APP_ID" in
     ;;
 esac
 
-ssh "$TV" "
+ssh -tt "$TV" "
 set +e
 echo '===== CLOSE OLD ====='
 luna-send -n 1 -f luna://com.webos.applicationManager/closeByAppId '{\"id\":\"$APP_ID\"}' || true
 for proc_dir in /proc/[0-9]*; do
   exe=\$(readlink \"\$proc_dir/exe\" 2>/dev/null)
   case \"\$exe\" in
-    '$REMOTE/bin/'*) kill \"\${proc_dir##*/}\" 2>/dev/null ;;
+    *'$REMOTE/bin/'*) kill \"\${proc_dir##*/}\" 2>/dev/null ;;
   esac
 done
 sleep 1
+rm -f "/tmp/${APP_ID}.native_main.log" "/tmp/${APP_ID}.client.log"
 
 echo '===== LAUNCH ====='
 luna-send -n 1 -f luna://com.webos.applicationManager/launch '{\"id\":\"$APP_ID\"}'
@@ -32,7 +33,7 @@ echo '===== PROCS ====='
 for proc_dir in /proc/[0-9]*; do
   exe=\$(readlink \"\$proc_dir/exe\" 2>/dev/null)
   case \"\$exe\" in
-    '$REMOTE/bin/'*)
+    *'$REMOTE/bin/'*)
       printf 'pid=%s exe=%s cmd=' \"\${proc_dir##*/}\" \"\$exe\"
       tr '\\000' ' ' < \"\$proc_dir/cmdline\"
       echo

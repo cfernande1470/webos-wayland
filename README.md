@@ -69,6 +69,9 @@ Important behavior:
 - uses `eglSwapInterval(1)` and Wayland frame callbacks;
 - derives animation time from compositor callback timestamps;
 - binds only the first advertised `wl_seat` to avoid duplicate input;
+- binds `wl_webos_shell` when version 1 or newer is advertised;
+- pauses frame production while the surface is minimized or fully obscured;
+- handles compositor close requests and requests Back/Exit key delivery;
 - falls back to the configured RGBA8888 surface when the Mali stack provides
   no compatible RGB888 config without alpha.
 
@@ -89,12 +92,14 @@ load, not an application renderer.
 ```text
 native/
   native_main.c              SAM entry point and renderer launcher
+  webos_shell.c/.h           shared webOS shell lifecycle integration
   wayland_egl.c              normal GPU renderer
   wayland_egl_stress.c       opt-in 4K stress renderer
   wayland_rect.c             wl_shm CPU fallback
 
 scripts/
   build.sh                   cross-build and ABI checks
+  package_ipk.sh             optional standard IPK packaging
   install_tv_lowspace.sh     canonical installer
   launch_tv.sh               SAM launch and diagnostics
   stop_tv.sh                 targeted application shutdown
@@ -142,6 +147,10 @@ export WEBOS_SDK="/absolute/path/to/arm-webos-linux-gnueabi_sdk-buildroot"
 The build fails if it produces AArch64 binaries or if the main binaries are not
 ARM 32-bit EABI executables.
 
+It also generates both `appinfo.json` and `packageinfo.json`. The latter is
+required for the developer application tree to be discoverable as a package by
+SAM.
+
 Supported build variables:
 
 ```text
@@ -153,6 +162,16 @@ DEFAULT_RENDERER   default: wayland_egl
 
 `APP_ID` is validated before any output directory is removed. It may only
 contain letters, numbers, dots, underscores, and hyphens.
+
+Create a standard unsigned development IPK with:
+
+```bash
+./scripts/package_ipk.sh
+```
+
+`INCLUDE_STRESS=1` includes the stress renderer in the IPK. Commercial TV
+firmware normally rejects unsigned IPKs; the low-space SSH installer remains
+the supported rooted-TV deployment path.
 
 ## Install
 
@@ -191,11 +210,14 @@ RENDERER=wayland_egl_stress INCLUDE_STRESS=1 \
 The installer stops only processes whose executable resolves inside the target
 application directory. It does not use broad `killall` commands.
 
+The installer atomically updates application files and writes the matching
+package metadata under `/media/developer/apps/usr/palm/packages/<app-id>`.
+
 ## Register and launch
 
-An app copied directly into the developer application directory may not be
-known to SAM until the TV has rescanned its metadata. Reboot once after the
-first installation if launch returns without creating a process:
+An app added directly to the developer tree may not be known to an already
+running SAM instance until it rescans its metadata. Restart SAM or reboot once
+after the first installation if launch returns without creating a process:
 
 ```bash
 ./scripts/reboot_tv.sh
@@ -230,6 +252,14 @@ Confirm GPU use with:
 ```bash
 ssh root@192.168.2.121 \
   'grep -E "EGL_VERSION|EGL_VENDOR|EGL_CONFIG|GL_RENDERER|GL_VERSION" \
+   /tmp/org.webosbrew.wayland.client.log'
+```
+
+Confirm the webOS lifecycle extension with:
+
+```bash
+ssh root@192.168.2.121 \
+  'grep -E "WEBOS_SHELL_(BOUND|ATTACHED|STATE|EXPOSED|VISIBILITY|CLOSE)" \
    /tmp/org.webosbrew.wayland.client.log'
 ```
 

@@ -11,7 +11,7 @@ case "$APP_ID" in
     ;;
 esac
 
-ssh "$TV" "
+ssh -tt "$TV" "
 echo '===== APP STATUS ====='
 luna-send -n 1 -f luna://com.webos.applicationManager/getAppLoadStatus '{\"appId\":\"$APP_ID\"}'
 
@@ -20,7 +20,7 @@ echo '===== PROCS ====='
 for proc_dir in /proc/[0-9]*; do
   exe=\$(readlink \"\$proc_dir/exe\" 2>/dev/null)
   case \"\$exe\" in
-    '$REMOTE/bin/'*)
+    *'$REMOTE/bin/'*)
       printf 'pid=%s exe=%s cmd=' \"\${proc_dir##*/}\" \"\$exe\"
       tr '\\000' ' ' < \"\$proc_dir/cmdline\"
       echo

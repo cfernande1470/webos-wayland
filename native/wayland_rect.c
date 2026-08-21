@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include <wayland-client.h>
+#include "webos_shell.h"
 #include <sys/mman.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -47,6 +48,7 @@ struct app {
     struct wl_surface *surface;
     struct wl_shell_surface *shell_surface;
     struct wl_callback *frame_cb;
+    struct webos_shell_context webos_shell;
 
     struct wl_seat *seat;
     struct wl_pointer *pointer;
@@ -57,6 +59,7 @@ struct app {
     int width;
     int height;
     int running;
+    int render_visible;
     int frame;
 
     int theme;
@@ -486,6 +489,23 @@ static void paint(struct app *a, struct shm_buf *b) {
 
 static void render(struct app *a);
 
+static void webos_visibility_changed(void *data, int visible) {
+    struct app *a = data;
+
+    a->render_visible = visible;
+    if (!visible && a->frame_cb) {
+        wl_callback_destroy(a->frame_cb);
+        a->frame_cb = NULL;
+    } else if (visible && a->running && !a->frame_cb && a->surface) {
+        render(a);
+    }
+}
+
+static void webos_close_requested(void *data) {
+    struct app *a = data;
+    a->running = 0;
+}
+
 static void frame_done(void *data, struct wl_callback *cb, uint32_t time) {
     (void)time;
     struct app *a = data;
@@ -493,7 +513,7 @@ static void frame_done(void *data, struct wl_callback *cb, uint32_t time) {
     if (cb) wl_callback_destroy(cb);
     a->frame_cb = NULL;
 
-    if (!a->running) return;
+    if (!a->running || !a->render_visible) return;
 
     a->frame++;
     render(a);
@@ -504,6 +524,8 @@ static const struct wl_callback_listener frame_listener = {
 };
 
 static void render(struct app *a) {
+    if (!a->running || !a->render_visible) return;
+
     struct shm_buf *b = next_buffer(a);
     if (!b) {
         fprintf(stderr, "NO_FREE_BUFFER frame=%d\n", a->frame);
@@ -801,6 +823,10 @@ static void registry_global(void *data, struct wl_registry *registry,
 
     fprintf(stderr, "GLOBAL %s v=%u id=%u\n", interface, version, name);
 
+    if (webos_shell_try_bind(&a->webos_shell, registry, name, interface, version)) {
+        return;
+    }
+
     if (strcmp(interface, "wl_compositor") == 0) {
         a->compositor = wl_registry_bind(
             registry, name, &wl_compositor_interface, version < 3 ? version : 3
@@ -820,9 +846,9 @@ static void registry_global(void *data, struct wl_registry *registry,
 }
 
 static void registry_remove(void *data, struct wl_registry *registry, uint32_t name) {
-    (void)data;
     (void)registry;
-    (void)name;
+    struct app *a = data;
+    webos_shell_global_remove(&a->webos_shell, name);
 }
 
 static const struct wl_registry_listener registry_listener = {
@@ -838,10 +864,14 @@ int main(int argc, char **argv) {
 
     struct app a;
     memset(&a, 0, sizeof(a));
+    webos_shell_context_init(
+        &a.webos_shell, &a, webos_visibility_changed, webos_close_requested
+    );
 
     a.width = 1920;
     a.height = 1080;
     a.running = 1;
+    a.render_visible = 1;
     a.win_x = 180;
     a.win_y = 170;
     a.pointer_x = 960;
@@ -897,6 +927,8 @@ int main(int argc, char **argv) {
         NULL
     );
 
+    webos_shell_attach(&a.webos_shell, a.surface, app_id);
+
     set_surface_opaque(&a);
 
     render(&a);
@@ -914,6 +946,7 @@ int main(int argc, char **argv) {
     if (a.pointer) wl_pointer_release(a.pointer);
     if (a.keyboard) wl_keyboard_release(a.keyboard);
     if (a.seat) wl_seat_release(a.seat);
+    webos_shell_context_destroy(&a.webos_shell);
     if (a.shell_surface) wl_shell_surface_destroy(a.shell_surface);
     if (a.surface) wl_surface_destroy(a.surface);
     if (a.shell) wl_shell_destroy(a.shell);

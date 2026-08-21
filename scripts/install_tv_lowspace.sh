@@ -8,6 +8,7 @@ INCLUDE_STRESS="${INCLUDE_STRESS:-0}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$ROOT/dist/$APP_ID"
 REMOTE="/media/developer/apps/usr/palm/applications/$APP_ID"
+REMOTE_PACKAGE="/media/developer/apps/usr/palm/packages/$APP_ID"
 TMP="/tmp/webos-wayland-upload-$APP_ID"
 
 case "$APP_ID" in
@@ -35,6 +36,7 @@ test -x "$OUT/bin/native_main"
 test -x "$OUT/bin/wayland_rect"
 test -x "$OUT/bin/wayland_egl"
 test -f "$OUT/appinfo.json"
+test -f "$OUT/packageinfo.json"
 test -f "$OUT/icon.png"
 
 if [ "$INCLUDE_STRESS" = "1" ]; then
@@ -45,21 +47,23 @@ echo "===== LOCAL SIZE/ABI ====="
 ls -lh "$OUT/bin"
 file "$OUT/bin/"* || true
 
-ssh "$TV" "
+ssh -tt "$TV" "
 set +e
 luna-send -n 1 -f luna://com.webos.applicationManager/closeByAppId '{\"id\":\"$APP_ID\"}' >/dev/null 2>&1
 for proc_dir in /proc/[0-9]*; do
   exe=\$(readlink \"\$proc_dir/exe\" 2>/dev/null)
   case \"\$exe\" in
-    '$REMOTE/bin/'*) kill \"\${proc_dir##*/}\" 2>/dev/null ;;
+    *'$REMOTE/bin/'*) kill \"\${proc_dir##*/}\" 2>/dev/null ;;
   esac
 done
 sleep 1
+rm -f '/tmp/${APP_ID}.native_main.log' '/tmp/${APP_ID}.client.log'
 rm -rf '$TMP'
-mkdir -p '$TMP' '$REMOTE/bin'
+mkdir -p '$TMP' '$REMOTE/bin' '$REMOTE_PACKAGE'
 "
 
 scp "$OUT/appinfo.json" "$TV:$TMP/appinfo.json"
+scp "$OUT/packageinfo.json" "$TV:$TMP/packageinfo.json"
 scp "$OUT/icon.png" "$TV:$TMP/icon.png"
 scp "$OUT/bin/native_main" "$TV:$TMP/native_main"
 scp "$OUT/bin/wayland_rect" "$TV:$TMP/wayland_rect"
@@ -72,17 +76,21 @@ fi
 ssh "$TV" "
 set -e
 
+chmod 755 '$REMOTE' '$REMOTE/bin' '$REMOTE_PACKAGE'
+
 rm -f '$REMOTE/bin/native_main.new' \
       '$REMOTE/bin/wayland_rect.new' \
       '$REMOTE/bin/wayland_egl.new' \
       '$REMOTE/bin/wayland_egl_stress.new' \
       '$REMOTE/appinfo.json.new' \
+      '$REMOTE_PACKAGE/packageinfo.json.new' \
       '$REMOTE/icon.png.new'
 
 cp '$TMP/native_main' '$REMOTE/bin/native_main.new'
 cp '$TMP/wayland_rect' '$REMOTE/bin/wayland_rect.new'
 cp '$TMP/wayland_egl' '$REMOTE/bin/wayland_egl.new'
 cp '$TMP/appinfo.json' '$REMOTE/appinfo.json.new'
+cp '$TMP/packageinfo.json' '$REMOTE_PACKAGE/packageinfo.json.new'
 cp '$TMP/icon.png' '$REMOTE/icon.png.new'
 
 if [ '$INCLUDE_STRESS' = '1' ]; then
@@ -90,7 +98,7 @@ if [ '$INCLUDE_STRESS' = '1' ]; then
 fi
 
 chmod 755 '$REMOTE/bin/native_main.new' '$REMOTE/bin/wayland_rect.new' '$REMOTE/bin/wayland_egl.new'
-chmod 644 '$REMOTE/appinfo.json.new' '$REMOTE/icon.png.new'
+chmod 644 '$REMOTE/appinfo.json.new' '$REMOTE_PACKAGE/packageinfo.json.new' '$REMOTE/icon.png.new'
 if [ -f '$REMOTE/bin/wayland_egl_stress.new' ]; then
   chmod 755 '$REMOTE/bin/wayland_egl_stress.new'
 fi
@@ -99,6 +107,7 @@ mv -f '$REMOTE/bin/native_main.new' '$REMOTE/bin/native_main'
 mv -f '$REMOTE/bin/wayland_rect.new' '$REMOTE/bin/wayland_rect'
 mv -f '$REMOTE/bin/wayland_egl.new' '$REMOTE/bin/wayland_egl'
 mv -f '$REMOTE/appinfo.json.new' '$REMOTE/appinfo.json'
+mv -f '$REMOTE_PACKAGE/packageinfo.json.new' '$REMOTE_PACKAGE/packageinfo.json'
 mv -f '$REMOTE/icon.png.new' '$REMOTE/icon.png'
 if [ -f '$REMOTE/bin/wayland_egl_stress.new' ]; then
   mv -f '$REMOTE/bin/wayland_egl_stress.new' '$REMOTE/bin/wayland_egl_stress'

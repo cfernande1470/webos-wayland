@@ -11,7 +11,7 @@ case "$APP_ID" in
     ;;
 esac
 
-ssh "$TV" "
+ssh -tt "$TV" "
 set +e
 echo '===== CLOSE APP ====='
 luna-send -n 1 -f luna://com.webos.applicationManager/closeByAppId '{\"id\":\"$APP_ID\"}'
@@ -19,7 +19,7 @@ sleep 1
 for proc_dir in /proc/[0-9]*; do
   exe=\$(readlink \"\$proc_dir/exe\" 2>/dev/null)
   case \"\$exe\" in
-    '$REMOTE/bin/'*) kill \"\${proc_dir##*/}\" 2>/dev/null ;;
+    *'$REMOTE/bin/'*) kill \"\${proc_dir##*/}\" 2>/dev/null ;;
   esac
 done
 
@@ -28,7 +28,7 @@ echo '===== PROCS AFTER STOP ====='
 for proc_dir in /proc/[0-9]*; do
   exe=\$(readlink \"\$proc_dir/exe\" 2>/dev/null)
   case \"\$exe\" in
-    '$REMOTE/bin/'*) echo \"pid=\${proc_dir##*/} exe=\$exe\" ;;
+    *'$REMOTE/bin/'*) echo \"pid=\${proc_dir##*/} exe=\$exe\" ;;
   esac
 done
 "

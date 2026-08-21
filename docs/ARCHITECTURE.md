@@ -51,12 +51,19 @@ wl_display
   -> wl_registry
      -> wl_compositor
      -> wl_shell
+     -> wl_webos_shell (optional v1+ lifecycle extension)
      -> first wl_seat
 
 wl_compositor
   -> wl_surface
      -> wl_shell_surface (fullscreen role)
+     -> wl_webos_shell_surface (optional lifecycle metadata/events)
 ```
+
+The core shell role is always created. The webOS shell surface supplements it
+with platform lifecycle information; it does not replace the core surface role.
+If the extension is absent or attachment fails, rendering continues through
+the verified `wl_shell` path.
 
 The target advertises several `wl_seat` globals. They may represent overlapping
 webOS input paths rather than independent users. Binding all of them generated
@@ -125,6 +132,10 @@ uses the callback timestamp relative to the first presented frame, so a delayed
 frame slows presentation without changing animation speed based on an assumed
 refresh rate.
 
+When `wl_webos_shell` explicitly reports a minimized or fully obscured surface,
+the client destroys its outstanding frame callback and stops submitting new
+frames. A later visible event starts the frame chain again.
+
 ## CPU fallback
 
 `wayland_rect` allocates three reusable shared-memory buffers:
@@ -155,12 +166,18 @@ installer.
 
 ## webOS-specific protocols
 
-The compositor also advertises `wl_webos_shell`,
-`wl_webos_input_manager`, surface groups, and Starfish extensions. The current
-stable implementation uses core `wl_shell` because that is the path verified
-through SAM on the target firmware.
+All renderers share `webos_shell.c`. The helper binds at most protocol version 2
+and was hardware-tested against the target's advertised version 1. It:
 
-`wl_webos_shell` remains a useful future experiment for exposed-region events,
-close requests, state transitions, and webOS key masks. It should be introduced
-behind a fallback rather than replacing the confirmed core-shell path without
-hardware lifecycle testing.
+- associates the existing `wl_surface` with `wl_webos_shell_surface`;
+- sets `appId` and display affinity `0`;
+- requests fullscreen state;
+- applies the default key mask plus Back and Exit;
+- logs state, pending-state, position, exposed-region, close, and add-on events;
+- derives effective visibility from both state and exposed rectangles;
+- notifies the renderer to suspend or resume its frame chain;
+- requests a clean renderer exit on a compositor close event.
+
+The compositor also advertises `wl_webos_input_manager`, surface groups, and
+Starfish extensions. Those protocols are not required for the current input or
+graphics path.

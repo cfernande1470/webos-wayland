@@ -4,6 +4,8 @@
 #include <EGL/egl.h>
 #include <GLES2/gl2.h>
 
+#include "webos_shell.h"
+
 #include <unistd.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -29,6 +31,7 @@ struct app {
     struct wl_surface *surface;
     struct wl_shell_surface *shell_surface;
     struct wl_callback *frame_cb;
+    struct webos_shell_context webos_shell;
 
     struct wl_seat *seat;
     struct wl_pointer *pointer;
@@ -53,6 +56,7 @@ struct app {
     int height;
     int force_4k;
     int running;
+    int render_visible;
     int frame;
     int theme;
 
@@ -384,6 +388,24 @@ static int init_egl(struct app *a) {
 
 static void render(struct app *a);
 
+static void webos_visibility_changed(void *data, int visible) {
+    struct app *a = data;
+
+    a->render_visible = visible;
+    if (!visible && a->frame_cb) {
+        wl_callback_destroy(a->frame_cb);
+        a->frame_cb = NULL;
+    } else if (visible && a->running && !a->frame_cb &&
+               a->egl_context != EGL_NO_CONTEXT) {
+        render(a);
+    }
+}
+
+static void webos_close_requested(void *data) {
+    struct app *a = data;
+    a->running = 0;
+}
+
 static void frame_done(void *data, struct wl_callback *cb, uint32_t time) {
     (void)time;
     struct app *a = data;
@@ -391,7 +413,7 @@ static void frame_done(void *data, struct wl_callback *cb, uint32_t time) {
     if (cb) wl_callback_destroy(cb);
     a->frame_cb = NULL;
 
-    if (!a->running) return;
+    if (!a->running || !a->render_visible) return;
 
     a->frame++;
     render(a);
@@ -424,6 +446,8 @@ static void log_stats(struct app *a) {
 }
 
 static void render(struct app *a) {
+    if (!a->running || !a->render_visible) return;
+
     double t = now_sec();
 
     glViewport(0, 0, a->width, a->height);
@@ -677,6 +701,10 @@ static void registry_global(void *data, struct wl_registry *registry,
 
     fprintf(stderr, "GLOBAL %s v=%u id=%u\n", interface, version, name);
 
+    if (webos_shell_try_bind(&a->webos_shell, registry, name, interface, version)) {
+        return;
+    }
+
     if (strcmp(interface, "wl_compositor") == 0) {
         a->compositor = wl_registry_bind(
             registry, name, &wl_compositor_interface, version < 3 ? version : 3
@@ -694,9 +722,9 @@ static void registry_global(void *data, struct wl_registry *registry,
 }
 
 static void registry_remove(void *data, struct wl_registry *registry, uint32_t name) {
-    (void)data;
     (void)registry;
-    (void)name;
+    struct app *a = data;
+    webos_shell_global_remove(&a->webos_shell, name);
 }
 
 static const struct wl_registry_listener registry_listener = {
@@ -710,11 +738,15 @@ int main(int argc, char **argv) {
 
     struct app a;
     memset(&a, 0, sizeof(a));
+    webos_shell_context_init(
+        &a.webos_shell, &a, webos_visibility_changed, webos_close_requested
+    );
 
     a.force_4k = getenv("STRESS_FORCE_4K") ? atoi(getenv("STRESS_FORCE_4K")) : 1;
     a.width = a.force_4k ? 3840 : 1920;
     a.height = a.force_4k ? 2160 : 1080;
     a.running = 1;
+    a.render_visible = 1;
     a.pointer_x = a.width / 2;
     a.pointer_y = a.height / 2;
 
@@ -760,6 +792,13 @@ int main(int argc, char **argv) {
         NULL
     );
 
+    const char *app_id = getenv("APP_ID");
+    webos_shell_attach(
+        &a.webos_shell,
+        a.surface,
+        app_id ? app_id : "org.webosbrew.wayland"
+    );
+
     set_surface_opaque(&a);
 
     if (init_egl(&a) < 0) {
@@ -802,6 +841,7 @@ int main(int argc, char **argv) {
     if (a.pointer) wl_pointer_release(a.pointer);
     if (a.keyboard) wl_keyboard_release(a.keyboard);
     if (a.seat) wl_seat_release(a.seat);
+    webos_shell_context_destroy(&a.webos_shell);
     if (a.shell_surface) wl_shell_surface_destroy(a.shell_surface);
     if (a.surface) wl_surface_destroy(a.surface);
     if (a.shell) wl_shell_destroy(a.shell);

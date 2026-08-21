@@ -61,8 +61,9 @@ echo
 echo "===== SDK CHECK ====="
 find "$SYSROOT/usr/include" -maxdepth 3 -name 'wayland-client.h' -print | head || true
 find "$SYSROOT/usr/include" -maxdepth 3 -name 'wayland-egl.h' -print | head || true
+find "$SYSROOT/usr/include" -maxdepth 3 -name 'wayland-webos-shell-client-protocol.h' -print | head || true
 find "$SYSROOT/usr/include" -maxdepth 4 \( -name 'egl.h' -o -name 'gl2.h' \) -print | head || true
-find "$SYSROOT/usr/lib" -maxdepth 2 \( -name 'libwayland-egl*' -o -name 'libEGL*' -o -name 'libGLESv2*' \) -print | head -20 || true
+find "$SYSROOT/usr/lib" -maxdepth 2 \( -name 'libwayland-egl*' -o -name 'libwayland-webos-client*' -o -name 'libEGL*' -o -name 'libGLESv2*' \) -print | head -20 || true
 
 echo
 echo "===== BUILD native_main ====="
@@ -75,23 +76,26 @@ echo
 echo "===== BUILD wayland_rect fallback ====="
 "$CC" -O2 -Wall -Wextra \
   "$ROOT/native/wayland_rect.c" \
+  "$ROOT/native/webos_shell.c" \
   -o "$OUT/bin/wayland_rect" \
-  -lwayland-client
+  -lwayland-webos-client -lwayland-client
 
 echo
 echo "===== BUILD wayland_egl ====="
 "$CC" -O2 -Wall -Wextra \
   "$ROOT/native/wayland_egl.c" \
+  "$ROOT/native/webos_shell.c" \
   -o "$OUT/bin/wayland_egl" \
-  -lwayland-client -lwayland-egl -lEGL -lGLESv2 -lm
+  -lwayland-webos-client -lwayland-client -lwayland-egl -lEGL -lGLESv2 -lm
 
 if [ -f "$ROOT/native/wayland_egl_stress.c" ]; then
   echo
   echo "===== BUILD wayland_egl_stress ====="
   "$CC" -O2 -Wall -Wextra \
     "$ROOT/native/wayland_egl_stress.c" \
+    "$ROOT/native/webos_shell.c" \
     -o "$OUT/bin/wayland_egl_stress" \
-    -lwayland-client -lwayland-egl -lEGL -lGLESv2 -lm
+    -lwayland-webos-client -lwayland-client -lwayland-egl -lEGL -lGLESv2 -lm
 fi
 
 cat > "$OUT/appinfo.json" <<JSON
@@ -106,6 +110,14 @@ cat > "$OUT/appinfo.json" <<JSON
   "noSplashOnLaunch": true,
   "spinnerOnLaunch": false,
   "nativeLifeCycleInterfaceVersion": 2
+}
+JSON
+
+cat > "$OUT/packageinfo.json" <<JSON
+{
+  "id": "$APP_ID",
+  "version": "$APP_VERSION",
+  "app": "$APP_ID"
 }
 JSON
 
