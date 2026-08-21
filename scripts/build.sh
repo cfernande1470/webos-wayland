@@ -3,10 +3,47 @@ set -euo pipefail
 
 APP_ID="${APP_ID:-org.webosbrew.wayland}"
 APP_TITLE="${APP_TITLE:-Wayland EGL Native Lab}"
+APP_VERSION="${APP_VERSION:-0.1.0}"
+DEFAULT_RENDERER="${DEFAULT_RENDERER:-wayland_egl}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$ROOT/dist/$APP_ID"
 
+case "$APP_ID" in
+  ""|*[!A-Za-z0-9._-]*)
+    echo "ERROR: APP_ID may only contain letters, numbers, dots, underscores, and hyphens." >&2
+    exit 2
+    ;;
+esac
+
+case "$DEFAULT_RENDERER" in
+  wayland_egl|wayland_rect|wayland_egl_stress) ;;
+  *)
+    echo "ERROR: unsupported DEFAULT_RENDERER: $DEFAULT_RENDERER" >&2
+    exit 2
+    ;;
+esac
+
+case "$APP_VERSION" in
+  ""|*[!A-Za-z0-9._-]*)
+    echo "ERROR: invalid APP_VERSION: $APP_VERSION" >&2
+    exit 2
+    ;;
+esac
+
+case "$APP_TITLE" in
+  *[\"\\]*|*$'\n'*|*$'\r'*)
+    echo "ERROR: APP_TITLE may not contain quotes, backslashes, or newlines." >&2
+    exit 2
+    ;;
+esac
+
+if [ ! -f "$ROOT/.webos-sdk.env" ]; then
+  echo "ERROR: missing .webos-sdk.env; copy and edit .webos-sdk.env.example." >&2
+  exit 2
+fi
+
 source "$ROOT/.webos-sdk.env"
+: "${WEBOS_SDK:?WEBOS_SDK is not set by .webos-sdk.env}"
 
 CC="$WEBOS_SDK/bin/arm-webos-linux-gnueabi-gcc"
 STRIP="$WEBOS_SDK/bin/arm-webos-linux-gnueabi-strip"
@@ -60,7 +97,7 @@ fi
 cat > "$OUT/appinfo.json" <<JSON
 {
   "id": "$APP_ID",
-  "version": "0.0.7",
+  "version": "$APP_VERSION",
   "vendor": "local",
   "type": "native",
   "main": "bin/native_main",
@@ -78,17 +115,17 @@ B64
 
 chmod 755 "$OUT/bin/native_main" "$OUT/bin/wayland_rect" "$OUT/bin/wayland_egl"
 [ -f "$OUT/bin/wayland_egl_stress" ] && chmod 755 "$OUT/bin/wayland_egl_stress"
-ln -sf wayland_egl "$OUT/bin/client"
+ln -sf "$DEFAULT_RENDERER" "$OUT/bin/client"
 if [ "$APP_ID" = "org.webosbrew.android" ]; then
   ln -sf wayland_rect "$OUT/bin/android_backend"
-else
-  ln -sf client "$OUT/bin/android_backend"
 fi
 
-"$STRIP" --strip-unneeded "$OUT/bin/native_main" || true
-"$STRIP" --strip-unneeded "$OUT/bin/wayland_rect" || true
-"$STRIP" --strip-unneeded "$OUT/bin/wayland_egl" || true
-[ -f "$OUT/bin/wayland_egl_stress" ] && "$STRIP" --strip-unneeded "$OUT/bin/wayland_egl_stress" || true
+"$STRIP" --strip-unneeded "$OUT/bin/native_main"
+"$STRIP" --strip-unneeded "$OUT/bin/wayland_rect"
+"$STRIP" --strip-unneeded "$OUT/bin/wayland_egl"
+if [ -f "$OUT/bin/wayland_egl_stress" ]; then
+  "$STRIP" --strip-unneeded "$OUT/bin/wayland_egl_stress"
+fi
 
 echo
 echo "===== ABI RESULT ====="

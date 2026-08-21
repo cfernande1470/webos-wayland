@@ -6,6 +6,7 @@
 #include <string.h>
 #include <limits.h>
 #include <time.h>
+#include <errno.h>
 
 #ifndef APP_ID
 #define APP_ID "org.webosbrew.wayland"
@@ -47,8 +48,17 @@ static void try_exec(const char *path) {
 
     execl(path, path, NULL);
 
-    snprintf(msg, sizeof(msg), "exec failed %s", path);
+    snprintf(msg, sizeof(msg), "exec failed %s: %s", path, strerror(errno));
     log_line(msg);
+}
+
+static int join_path(char *dest, size_t size, const char *dir, const char *name) {
+    int written = snprintf(dest, size, "%s/%s", dir, name);
+    if (written < 0 || (size_t)written >= size) {
+        log_line("binary path is too long");
+        return -1;
+    }
+    return 0;
 }
 
 int main(int argc, char **argv) {
@@ -88,12 +98,17 @@ int main(int argc, char **argv) {
     char egl[PATH_MAX];
     char shm[PATH_MAX];
 
-    snprintf(android_backend, sizeof(android_backend), "%s/android_backend", bin_dir);
-    snprintf(client, sizeof(client), "%s/client", bin_dir);
-    snprintf(egl, sizeof(egl), "%s/wayland_egl", bin_dir);
-    snprintf(shm, sizeof(shm), "%s/wayland_rect", bin_dir);
+    if (join_path(android_backend, sizeof(android_backend), bin_dir, "android_backend") < 0 ||
+        join_path(client, sizeof(client), bin_dir, "client") < 0 ||
+        join_path(egl, sizeof(egl), bin_dir, "wayland_egl") < 0 ||
+        join_path(shm, sizeof(shm), bin_dir, "wayland_rect") < 0) {
+        return 126;
+    }
 
-    try_exec(android_backend);
+    if (strcmp(APP_ID, "org.webosbrew.android") == 0) {
+        try_exec(android_backend);
+    }
+
     try_exec(client);
     try_exec(egl);
     try_exec(shm);

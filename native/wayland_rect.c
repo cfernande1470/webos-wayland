@@ -200,7 +200,8 @@ static int create_tmpfile(size_t size) {
 
     unlink(name);
 
-    if (ftruncate(fd, size) < 0) {
+    if (size > INT32_MAX || ftruncate(fd, (off_t)size) < 0) {
+        if (size > INT32_MAX) errno = EFBIG;
         perror("ftruncate");
         close(fd);
         return -1;
@@ -220,8 +221,18 @@ static const struct wl_buffer_listener buffer_listener = {
 };
 
 static int init_buffer(struct app *a, struct shm_buf *b) {
+    if (a->width <= 0 || a->height <= 0 || a->width > INT32_MAX / 4) {
+        errno = EINVAL;
+        return -1;
+    }
+
     int stride = a->width * 4;
     size_t size = (size_t)stride * (size_t)a->height;
+
+    if (size > INT32_MAX) {
+        errno = EFBIG;
+        return -1;
+    }
 
     int fd = create_tmpfile(size);
     if (fd < 0) return -1;
@@ -233,13 +244,24 @@ static int init_buffer(struct app *a, struct shm_buf *b) {
         return -1;
     }
 
-    struct wl_shm_pool *pool = wl_shm_create_pool(a->shm, fd, size);
+    struct wl_shm_pool *pool = wl_shm_create_pool(a->shm, fd, (int32_t)size);
+    if (!pool) {
+        munmap(data, size);
+        close(fd);
+        return -1;
+    }
+
     struct wl_buffer *wlbuf = wl_shm_pool_create_buffer(
         pool, 0, a->width, a->height, stride, WL_SHM_FORMAT_XRGB8888
     );
 
     wl_shm_pool_destroy(pool);
     close(fd);
+
+    if (!wlbuf) {
+        munmap(data, size);
+        return -1;
+    }
 
     memset(b, 0, sizeof(*b));
     b->wlbuf = wlbuf;
@@ -260,6 +282,17 @@ static void destroy_buffers(struct app *a) {
         if (b->data && b->data != MAP_FAILED) munmap(b->data, b->size);
         memset(b, 0, sizeof(*b));
     }
+}
+
+static void set_surface_opaque(struct app *a) {
+    if (!a->compositor || !a->surface || a->width <= 0 || a->height <= 0) return;
+
+    struct wl_region *region = wl_compositor_create_region(a->compositor);
+    if (!region) return;
+
+    wl_region_add(region, 0, 0, a->width, a->height);
+    wl_surface_set_opaque_region(a->surface, region);
+    wl_region_destroy(region);
 }
 
 static struct shm_buf *next_buffer(struct app *a) {
@@ -324,7 +357,7 @@ static void paint(struct app *a, struct shm_buf *b) {
 
         uint32_t green = rgb(105, 230, 120);
         uint32_t dark = rgb(18, 24, 30);
-        uint32_t white = rgb(242, 242, 242);
+        uint32_t android_white = rgb(242, 242, 242);
         uint32_t blue = rgb(72, 138, 255);
 
         rect(p, w, h, 0, 0, w, 88, rgb(9, 12, 18));
@@ -337,7 +370,7 @@ static void paint(struct app *a, struct shm_buf *b) {
         rect(p, w, h, cx, cy, card_w, card_h, rgb(16, 20, 28));
         outline(p, w, h, cx, cy, card_w, card_h, 4, green);
 
-        draw_android_robot(p, w, h, cx + 190, cy + 210, 150, green, dark, white);
+        draw_android_robot(p, w, h, cx + 190, cy + 210, 150, green, dark, android_white);
 
         rect(p, w, h, cx + 360, cy + 82, 520, 42, green);
         rect(p, w, h, cx + 360, cy + 82, a->android_ready ? 520 : (a->frame * 18) % 520, 42, blue);
@@ -514,6 +547,7 @@ static void shell_configure(void *data, struct wl_shell_surface *shell_surface,
         a->width = width;
         a->height = height;
         destroy_buffers(a);
+        set_surface_opaque(a);
     }
 }
 
@@ -736,18 +770,24 @@ static void seat_capabilities(void *data, struct wl_seat *seat, uint32_t caps) {
 
     fprintf(stderr, "SEAT_CAPS caps=%u\n", caps);
 
-    if (caps & WL_SEAT_CAPABILITY_POINTER) {
+    if ((caps & WL_SEAT_CAPABILITY_POINTER) && !a->pointer) {
         struct wl_pointer *ptr = wl_seat_get_pointer(seat);
         wl_pointer_add_listener(ptr, &pointer_listener, a);
         a->pointer = ptr;
         fprintf(stderr, "POINTER_ATTACHED seat=%p ptr=%p\n", (void*)seat, (void*)ptr);
+    } else if (!(caps & WL_SEAT_CAPABILITY_POINTER) && a->pointer) {
+        wl_pointer_release(a->pointer);
+        a->pointer = NULL;
     }
 
-    if (caps & WL_SEAT_CAPABILITY_KEYBOARD) {
+    if ((caps & WL_SEAT_CAPABILITY_KEYBOARD) && !a->keyboard) {
         struct wl_keyboard *kbd = wl_seat_get_keyboard(seat);
         wl_keyboard_add_listener(kbd, &keyboard_listener, a);
         a->keyboard = kbd;
         fprintf(stderr, "KEYBOARD_ATTACHED seat=%p kbd=%p\n", (void*)seat, (void*)kbd);
+    } else if (!(caps & WL_SEAT_CAPABILITY_KEYBOARD) && a->keyboard) {
+        wl_keyboard_release(a->keyboard);
+        a->keyboard = NULL;
     }
 }
 
@@ -769,7 +809,7 @@ static void registry_global(void *data, struct wl_registry *registry,
         a->shm = wl_registry_bind(registry, name, &wl_shm_interface, 1);
     } else if (strcmp(interface, "wl_shell") == 0) {
         a->shell = wl_registry_bind(registry, name, &wl_shell_interface, 1);
-    } else if (strcmp(interface, "wl_seat") == 0) {
+    } else if (strcmp(interface, "wl_seat") == 0 && !a->seat) {
         struct wl_seat *seat = wl_registry_bind(
             registry, name, &wl_seat_interface, version < 3 ? version : 3
         );
@@ -836,7 +876,16 @@ int main(int argc, char **argv) {
     }
 
     a.surface = wl_compositor_create_surface(a.compositor);
+    if (!a.surface) {
+        fprintf(stderr, "ERROR: failed to create Wayland surface\n");
+        return 4;
+    }
+
     a.shell_surface = wl_shell_get_shell_surface(a.shell, a.surface);
+    if (!a.shell_surface) {
+        fprintf(stderr, "ERROR: failed to create Wayland shell surface\n");
+        return 4;
+    }
 
     wl_shell_surface_add_listener(a.shell_surface, &shell_listener, &a);
     wl_shell_surface_set_title(a.shell_surface, "webOS Wayland Native Lab v3");
@@ -847,6 +896,8 @@ int main(int argc, char **argv) {
         0,
         NULL
     );
+
+    set_surface_opaque(&a);
 
     render(&a);
 
@@ -860,6 +911,15 @@ int main(int argc, char **argv) {
 
     if (a.frame_cb) wl_callback_destroy(a.frame_cb);
     destroy_buffers(&a);
+    if (a.pointer) wl_pointer_release(a.pointer);
+    if (a.keyboard) wl_keyboard_release(a.keyboard);
+    if (a.seat) wl_seat_release(a.seat);
+    if (a.shell_surface) wl_shell_surface_destroy(a.shell_surface);
+    if (a.surface) wl_surface_destroy(a.surface);
+    if (a.shell) wl_shell_destroy(a.shell);
+    if (a.shm) wl_shm_destroy(a.shm);
+    if (a.compositor) wl_compositor_destroy(a.compositor);
+    if (a.registry) wl_registry_destroy(a.registry);
     wl_display_disconnect(a.display);
 
     fprintf(stderr, "wayland_rect_v3 exit\n");

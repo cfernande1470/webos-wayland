@@ -9,7 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/time.h>
+#include <time.h>
 
 #ifndef KEY_ESC
 #define KEY_ESC 1
@@ -59,19 +59,15 @@ struct app {
     int pointer_x;
     int pointer_y;
 
-    struct timeval start_tv;
-    struct timeval last_tv;
+    double start_sec;
+    double last_sec;
     int last_frame;
 };
 
 static double now_sec(void) {
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    return (double)tv.tv_sec + (double)tv.tv_usec / 1000000.0;
-}
-
-static double tv_sec(const struct timeval *tv) {
-    return (double)tv->tv_sec + (double)tv->tv_usec / 1000000.0;
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) < 0) return 0.0;
+    return (double)ts.tv_sec + (double)ts.tv_nsec / 1000000000.0;
 }
 
 static void die_egl(const char *where) {
@@ -161,7 +157,11 @@ static GLuint make_program(void) {
 
     GLuint v = compile_shader(GL_VERTEX_SHADER, vs);
     GLuint f = compile_shader(GL_FRAGMENT_SHADER, fs);
-    if (!v || !f) return 0;
+    if (!v || !f) {
+        if (v) glDeleteShader(v);
+        if (f) glDeleteShader(f);
+        return 0;
+    }
 
     GLuint p = glCreateProgram();
     glAttachShader(p, v);
@@ -188,41 +188,85 @@ static GLuint make_program(void) {
 }
 
 static int choose_config(struct app *a) {
-    const EGLint attrs_alpha[] = {
-        EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
-        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
-        EGL_RED_SIZE, 8,
-        EGL_GREEN_SIZE, 8,
-        EGL_BLUE_SIZE, 8,
-        EGL_ALPHA_SIZE, 8,
-        EGL_DEPTH_SIZE, 0,
-        EGL_STENCIL_SIZE, 0,
-        EGL_NONE
-    };
-
-    const EGLint attrs_noalpha[] = {
-        EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
-        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
-        EGL_RED_SIZE, 8,
-        EGL_GREEN_SIZE, 8,
-        EGL_BLUE_SIZE, 8,
-        EGL_DEPTH_SIZE, 0,
-        EGL_STENCIL_SIZE, 0,
-        EGL_NONE
-    };
-
-    EGLint ncfg = 0;
-
-    if (eglChooseConfig(a->egl_display, attrs_alpha, &a->egl_config, 1, &ncfg) && ncfg > 0) {
-        return 0;
+    EGLint count = 0;
+    if (!eglGetConfigs(a->egl_display, NULL, 0, &count) || count < 1) {
+        die_egl("eglGetConfigs(count)");
+        return -1;
     }
 
-    if (eglChooseConfig(a->egl_display, attrs_noalpha, &a->egl_config, 1, &ncfg) && ncfg > 0) {
-        return 0;
+    EGLConfig *configs = calloc((size_t)count, sizeof(*configs));
+    if (!configs) {
+        fprintf(stderr, "ERROR allocating EGL config list\n");
+        return -1;
     }
 
-    die_egl("eglChooseConfig");
-    return -1;
+    if (!eglGetConfigs(a->egl_display, configs, count, &count)) {
+        free(configs);
+        die_egl("eglGetConfigs(list)");
+        return -1;
+    }
+
+    int best_score = -1000000;
+    EGLConfig best = NULL;
+
+    for (EGLint i = 0; i < count; i++) {
+        EGLint surface = 0, renderable = 0;
+        EGLint red = 0, green = 0, blue = 0, alpha = 0;
+        EGLint depth = 0, stencil = 0, caveat = EGL_NONE;
+
+        eglGetConfigAttrib(a->egl_display, configs[i], EGL_SURFACE_TYPE, &surface);
+        eglGetConfigAttrib(a->egl_display, configs[i], EGL_RENDERABLE_TYPE, &renderable);
+        eglGetConfigAttrib(a->egl_display, configs[i], EGL_RED_SIZE, &red);
+        eglGetConfigAttrib(a->egl_display, configs[i], EGL_GREEN_SIZE, &green);
+        eglGetConfigAttrib(a->egl_display, configs[i], EGL_BLUE_SIZE, &blue);
+        eglGetConfigAttrib(a->egl_display, configs[i], EGL_ALPHA_SIZE, &alpha);
+        eglGetConfigAttrib(a->egl_display, configs[i], EGL_DEPTH_SIZE, &depth);
+        eglGetConfigAttrib(a->egl_display, configs[i], EGL_STENCIL_SIZE, &stencil);
+        eglGetConfigAttrib(a->egl_display, configs[i], EGL_CONFIG_CAVEAT, &caveat);
+
+        if (!(surface & EGL_WINDOW_BIT) || !(renderable & EGL_OPENGL_ES2_BIT) ||
+            red < 8 || green < 8 || blue < 8 || caveat == EGL_SLOW_CONFIG) {
+            continue;
+        }
+
+        int score = (alpha == 0 ? 10000 : 0) - alpha * 100 - depth * 10 - stencil * 10;
+        score -= (red - 8) + (green - 8) + (blue - 8);
+        if (score > best_score) {
+            best_score = score;
+            best = configs[i];
+        }
+    }
+
+    free(configs);
+    if (!best) {
+        fprintf(stderr, "ERROR no suitable EGL window config\n");
+        return -1;
+    }
+
+    a->egl_config = best;
+
+    EGLint id = 0, red = 0, green = 0, blue = 0, alpha = 0, depth = 0, stencil = 0;
+    eglGetConfigAttrib(a->egl_display, best, EGL_CONFIG_ID, &id);
+    eglGetConfigAttrib(a->egl_display, best, EGL_RED_SIZE, &red);
+    eglGetConfigAttrib(a->egl_display, best, EGL_GREEN_SIZE, &green);
+    eglGetConfigAttrib(a->egl_display, best, EGL_BLUE_SIZE, &blue);
+    eglGetConfigAttrib(a->egl_display, best, EGL_ALPHA_SIZE, &alpha);
+    eglGetConfigAttrib(a->egl_display, best, EGL_DEPTH_SIZE, &depth);
+    eglGetConfigAttrib(a->egl_display, best, EGL_STENCIL_SIZE, &stencil);
+    fprintf(stderr, "EGL_CONFIG id=%d rgba=%d/%d/%d/%d depth=%d stencil=%d\n",
+            id, red, green, blue, alpha, depth, stencil);
+    return 0;
+}
+
+static void set_surface_opaque(struct app *a) {
+    if (!a->compositor || !a->surface || a->width <= 0 || a->height <= 0) return;
+
+    struct wl_region *region = wl_compositor_create_region(a->compositor);
+    if (!region) return;
+
+    wl_region_add(region, 0, 0, a->width, a->height);
+    wl_surface_set_opaque_region(a->surface, region);
+    wl_region_destroy(region);
 }
 
 static int init_egl(struct app *a) {
@@ -289,7 +333,10 @@ static int init_egl(struct app *a) {
 
     const char *swap_env = getenv("STRESS_SWAP_INTERVAL");
     int swap_interval = swap_env ? atoi(swap_env) : 1;
-    eglSwapInterval(a->egl_display, swap_interval);
+    if (!eglSwapInterval(a->egl_display, swap_interval)) {
+        die_egl("eglSwapInterval");
+        return -1;
+    }
 
     fprintf(stderr, "STRESS_SWAP_INTERVAL %d\n", swap_interval);
     fprintf(stderr, "GL_VENDOR %s\n", glGetString(GL_VENDOR));
@@ -305,6 +352,12 @@ static int init_egl(struct app *a) {
     a->uni_pointer = glGetUniformLocation(a->program, "u_pointer");
     a->uni_theme = glGetUniformLocation(a->program, "u_theme");
 
+    if (a->attr_pos < 0 || a->uni_resolution < 0 || a->uni_time < 0 ||
+        a->uni_pointer < 0 || a->uni_theme < 0) {
+        fprintf(stderr, "ERROR required shader attribute or uniform is unavailable\n");
+        return -1;
+    }
+
     const GLfloat verts[] = {
         -1.0f, -1.0f,
          3.0f, -1.0f,
@@ -312,14 +365,18 @@ static int init_egl(struct app *a) {
     };
 
     glGenBuffers(1, &a->vbo);
+    if (!a->vbo) {
+        fprintf(stderr, "ERROR glGenBuffers failed\n");
+        return -1;
+    }
     glBindBuffer(GL_ARRAY_BUFFER, a->vbo);
     glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_STATIC_DRAW);
 
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_CULL_FACE);
 
-    gettimeofday(&a->start_tv, NULL);
-    a->last_tv = a->start_tv;
+    a->start_sec = now_sec();
+    a->last_sec = a->start_sec;
     a->last_frame = 0;
 
     return 0;
@@ -345,15 +402,10 @@ static const struct wl_callback_listener frame_listener = {
 };
 
 static void log_stats(struct app *a) {
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
+    double now = now_sec();
 
-    double now = tv_sec(&tv);
-    double last = tv_sec(&a->last_tv);
-    double start = tv_sec(&a->start_tv);
-
-    double dt = now - last;
-    double total = now - start;
+    double dt = now - a->last_sec;
+    double total = now - a->start_sec;
 
     int frames = a->frame - a->last_frame;
 
@@ -366,7 +418,7 @@ static void log_stats(struct app *a) {
                 a->frame, a->width, a->height, fps, avg,
                 a->theme, a->pointer_x, a->pointer_y, a->force_4k);
 
-        a->last_tv = tv;
+        a->last_sec = now;
         a->last_frame = a->frame;
     }
 }
@@ -425,7 +477,10 @@ static void shell_configure(void *data, struct wl_shell_surface *shell_surface,
         wl_egl_window_resize(a->egl_window, a->width, a->height, 0, 0);
     }
 
-    glViewport(0, 0, a->width, a->height);
+    set_surface_opaque(a);
+    if (a->egl_context != EGL_NO_CONTEXT) {
+        glViewport(0, 0, a->width, a->height);
+    }
 }
 
 static void shell_popup_done(void *data, struct wl_shell_surface *shell_surface) {
@@ -591,18 +646,24 @@ static void seat_capabilities(void *data, struct wl_seat *seat, uint32_t caps) {
 
     fprintf(stderr, "SEAT_CAPS caps=%u seat=%p\n", caps, (void*)seat);
 
-    if (caps & WL_SEAT_CAPABILITY_POINTER) {
+    if ((caps & WL_SEAT_CAPABILITY_POINTER) && !a->pointer) {
         struct wl_pointer *ptr = wl_seat_get_pointer(seat);
         wl_pointer_add_listener(ptr, &pointer_listener, a);
         a->pointer = ptr;
         fprintf(stderr, "POINTER_ATTACHED seat=%p ptr=%p\n", (void*)seat, (void*)ptr);
+    } else if (!(caps & WL_SEAT_CAPABILITY_POINTER) && a->pointer) {
+        wl_pointer_release(a->pointer);
+        a->pointer = NULL;
     }
 
-    if (caps & WL_SEAT_CAPABILITY_KEYBOARD) {
+    if ((caps & WL_SEAT_CAPABILITY_KEYBOARD) && !a->keyboard) {
         struct wl_keyboard *kbd = wl_seat_get_keyboard(seat);
         wl_keyboard_add_listener(kbd, &keyboard_listener, a);
         a->keyboard = kbd;
         fprintf(stderr, "KEYBOARD_ATTACHED seat=%p kbd=%p\n", (void*)seat, (void*)kbd);
+    } else if (!(caps & WL_SEAT_CAPABILITY_KEYBOARD) && a->keyboard) {
+        wl_keyboard_release(a->keyboard);
+        a->keyboard = NULL;
     }
 }
 
@@ -622,7 +683,7 @@ static void registry_global(void *data, struct wl_registry *registry,
         );
     } else if (strcmp(interface, "wl_shell") == 0) {
         a->shell = wl_registry_bind(registry, name, &wl_shell_interface, 1);
-    } else if (strcmp(interface, "wl_seat") == 0) {
+    } else if (strcmp(interface, "wl_seat") == 0 && !a->seat) {
         struct wl_seat *seat = wl_registry_bind(
             registry, name, &wl_seat_interface, version < 3 ? version : 3
         );
@@ -678,7 +739,16 @@ int main(int argc, char **argv) {
     }
 
     a.surface = wl_compositor_create_surface(a.compositor);
+    if (!a.surface) {
+        fprintf(stderr, "ERROR failed to create Wayland surface\n");
+        return 4;
+    }
+
     a.shell_surface = wl_shell_get_shell_surface(a.shell, a.surface);
+    if (!a.shell_surface) {
+        fprintf(stderr, "ERROR failed to create Wayland shell surface\n");
+        return 4;
+    }
 
     wl_shell_surface_add_listener(a.shell_surface, &shell_listener, &a);
     wl_shell_surface_set_title(a.shell_surface, "webOS Wayland EGL 4K Stress");
@@ -689,6 +759,8 @@ int main(int argc, char **argv) {
         0,
         NULL
     );
+
+    set_surface_opaque(&a);
 
     if (init_egl(&a) < 0) {
         fprintf(stderr, "ERROR init_egl failed\n");
@@ -727,6 +799,14 @@ int main(int argc, char **argv) {
     }
 
     if (a.egl_window) wl_egl_window_destroy(a.egl_window);
+    if (a.pointer) wl_pointer_release(a.pointer);
+    if (a.keyboard) wl_keyboard_release(a.keyboard);
+    if (a.seat) wl_seat_release(a.seat);
+    if (a.shell_surface) wl_shell_surface_destroy(a.shell_surface);
+    if (a.surface) wl_surface_destroy(a.surface);
+    if (a.shell) wl_shell_destroy(a.shell);
+    if (a.compositor) wl_compositor_destroy(a.compositor);
+    if (a.registry) wl_registry_destroy(a.registry);
     if (a.display) wl_display_disconnect(a.display);
 
     return 0;
