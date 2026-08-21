@@ -66,6 +66,77 @@ for field in /sys/module/galcore/parameters/*; do
   echo
 done
 
+echo "===== MALI MODULES ====="
+for module in /sys/module/mali_kbase /sys/module/mali; do
+  [ -d "$module" ] || continue
+  echo "MALI_MODULE=$module"
+  find "$module" -maxdepth 3 -type f -readable 2>/dev/null | sort | while read -r node; do
+    case "$node" in
+      */parameters/*|*/uevent|*/refcnt)
+        printf "%s=" "$node"
+        cat "$node" 2>/dev/null || true
+        echo
+        ;;
+    esac
+  done
+done
+
+echo "===== DEBUGFS MALI (read-only, if already mounted) ====="
+if [ -d /sys/kernel/debug ]; then
+  debug_nodes=$(find /sys/kernel/debug -maxdepth 3 -iname "*mali*" -print 2>/dev/null || true)
+  if [ -n "$debug_nodes" ]; then
+    printf "%s\n" "$debug_nodes"
+    printf "%s\n" "$debug_nodes" | while read -r node; do
+      [ -f "$node" ] || continue
+      [ -r "$node" ] || continue
+      size=$(wc -c < "$node" 2>/dev/null || echo 0)
+      [ "$size" -le 65536 ] || continue
+      echo "DEBUG_NODE=$node"
+      head -c 4096 "$node" 2>/dev/null || true
+      echo
+    done
+  else
+    echo "DEBUGFS_MALI=(none visible; debugfs was not mounted by this script)"
+  fi
+else
+  echo "DEBUGFS=(not mounted)"
+fi
+
+echo "===== PROC GPU/MALI REFERENCES ====="
+for node in /proc/driver/* /proc/*mali* /proc/*gpu*; do
+  [ -f "$node" ] || continue
+  case "$node" in
+    *mali*|*gpu*|*galcore*)
+      echo "PROC_NODE=$node"
+      head -c 4096 "$node" 2>/dev/null || true
+      echo
+      ;;
+  esac
+done
+if [ -r /proc/modules ]; then
+  grep -iE "mali|galcore|gpu" /proc/modules || true
+fi
+
+echo "===== MALI COUNTER-LIKE NODES ====="
+find /sys/devices/platform/mali.0 /sys/class /sys/kernel/debug -maxdepth 8 -type f \
+  \( -iname "*util*" -o -iname "*busy*" -o -iname "*counter*" -o -iname "*occup*" \
+     -o -iname "*tiler*" -o -iname "*shader*" -o -iname "*l2*" -o -iname "*fault*" \
+     -o -iname "*stall*" -o -iname "*opp*" \) -readable 2>/dev/null | sort -u | \
+  while read -r node; do
+    case "$node" in
+      *mali*|*gpu*|*/debug/*)
+        printf "%s=" "$node"
+        head -c 4096 "$node" 2>/dev/null || true
+        echo
+        ;;
+    esac
+  done
+
+if [ "${GPU_STATUS_DMESG:-0}" = "1" ]; then
+  echo "===== KERNEL GPU/THERMAL LOG REFERENCES ====="
+  dmesg 2>/dev/null | grep -iE "mali|gpu|thermal|thrott|devfreq|galcore" | tail -200 || true
+fi
+
 echo "===== THERMAL ZONES ====="
 found_thermal=0
 for zone in /sys/class/thermal/thermal_zone*; do

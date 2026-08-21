@@ -19,6 +19,30 @@ The audit covered:
 No DRM/KMS or fbdev write tests were performed during this audit. Previous
 fbdev results were reviewed from the repository.
 
+## Phase 2 methodology audit
+
+Before changing the benchmark, the first-phase measurement path was reviewed
+for self-inflicted bias:
+
+| Possible bias | Classification | Finding |
+|---|---|---|
+| Eight in-flight timer queries | Confirmed | The old offscreen path called `glFinish()` whenever all eight slots were active. This bounded queue depth but could add artificial bubbles. |
+| Final `glFinish()` | Confirmed | The old summary drained the whole GPU before printing. It is now counted separately and is not part of per-frame GPU samples. |
+| Timer query overhead | Probable | `glBeginQueryEXT`/`glEndQueryEXT` add driver work. Timer on/off and CPU query-call metrics are now independently measurable. |
+| Window EGL surface in FBO mode | Probable | The old FBO still used a Wayland EGL window surface and context. A surfaceless/pbuffer comparison path is now available. |
+| 256x256 texture working set | Confirmed/probable | Two 256x256 textures are only 0.5 MiB total and can be cache-friendly. Texture size and access pattern are now parameters. |
+| Shader compiler folding/unrolling | Probable | Loop bounds are compile-time constants and the compiler may unroll or combine operations. All workload accumulators feed the final color, and compile/link failures are logged; binary disassembly is not exposed by this firmware. |
+| Logging | Little relevance | Progress logging occurs every two seconds and is outside the draw hot path. Machine output is emitted only once at completion. |
+| One-second warmup | Probable for thermals, low relevance for shader steady state | Warmup is configurable; long thermal runs must be requested explicitly. |
+| Thermal/DVFS drift | Unverified/probable | The firmware has no generic devfreq or thermal-zone nodes. Mali policy and driver nodes are sampled before/during/after, but frequency is not directly observable. |
+| Benchmark ordering and cache history | Probable | Results can depend on the previous workload. The sweep uses independent process launches; randomized order remains a recommended follow-up. |
+| Wayland callback and compositor pacing | Confirmed for presentation modes | `frame` and `swap` measure presentation behavior, not the GPU ceiling. `pbuffer`/surfaceless removes that dependency. |
+
+The phase-two implementation therefore separates completed-GPU timing from CPU
+submission throughput, exposes timer depth and backpressure counters, and adds
+a surfaceless EGL path. It deliberately does not claim that any single short
+run is an absolute Mali limit.
+
 ## Baseline findings
 
 The original normal renderer already used hardware acceleration. Runtime proof
@@ -106,12 +130,13 @@ remove its `wl_surface_frame` dependency: `render()` installed a frame callback
 and `frame_done()` scheduled every subsequent render. It therefore measured a
 compositor-paced workload, not the GPU ceiling.
 
-The stress renderer now has three explicit pacing modes:
+The stress renderer now has four explicit pacing modes:
 
 ```text
 STRESS_PACING=frame      surface presentation plus wl_surface_frame
 STRESS_PACING=swap       surface presentation, eglSwapInterval(0), no frame callback
 STRESS_PACING=offscreen  FBO rendering with no presentation per iteration
+STRESS_PACING=pbuffer    surfaceless EGL context, or pbuffer fallback
 ```
 
 `swap` is useful because it tests whether EGL/surface-manager still blocks. On
@@ -122,9 +147,10 @@ number of GPU queries in flight and applies backpressure, preventing an
 unbounded command queue from turning final `glFinish()` into a misleading hang.
 
 The target exposes `GL_EXT_disjoint_timer_query`. The benchmark loads its entry
-points dynamically, keeps eight queries in flight, polls availability without
-blocking, and discards disjoint samples. It reports CPU submit time and GPU
-time separately with average, p50, p95, and p99 values. A short verified run
+points dynamically, keeps a configurable query ring in flight, recycles the
+oldest query when full without a blanket `glFinish()`, polls availability
+without blocking, and discards disjoint samples. It reports CPU submit time and
+GPU time separately with average, p50, p95, and p99 values. A short verified run
 at 1920x1080, ALU workload, one iteration produced:
 
 ```text
@@ -312,6 +338,273 @@ triangle to three distinct offsets without duplicate actions.
 - Shell scripts pass `bash -n`.
 - GCC 12.2 `-fanalyzer` reports no findings.
 - The renderer sources compile cleanly under the project's normal warning set.
+
+## Phase 2 implementation and hardware validation
+
+The stress benchmark now supports:
+
+```text
+STRESS_PACING=frame|swap|offscreen|pbuffer
+STRESS_WORKLOAD=fill|alu|sfu|bandwidth
+STRESS_GPU_TIMER=on|off
+STRESS_TIMER_SLOTS=1..128 (8/16/32/64 are the useful comparison points)
+STRESS_TEXTURE_SIZE=64..8192, clamped to GL_MAX_TEXTURE_SIZE
+STRESS_TEXTURE_PATTERN=coherent|stride|randomish
+STRESS_OUTPUT=human|jsonl|tsv
+STRESS_CPU_AFFINITY=<index> (opt-in)
+```
+
+`pbuffer` first attempts `EGL_KHR_surfaceless_context` and otherwise creates an
+EGL pbuffer. On the target the surfaceless path works. It still renders into a
+complete FBO, so the comparison is between a Wayland-window EGL context and a
+surfaceless/pbuffer EGL context, not between different fragment workloads.
+
+The timer ring is dynamically allocated. When it fills, the benchmark recycles
+the oldest query by waiting for that query's result rather than calling
+`glFinish()` for every ring wrap. `glFinish()` remains counted for the final
+drain and for the timer-disabled fallback backpressure path. The summary logs
+ring-full events, query waits, finishes, completed queries, and disjoint
+discarded samples.
+
+The benchmark now reports independent distributions for:
+
+```text
+STRESS_CPU_DRAW_MS
+STRESS_CPU_QUERY_BEGIN_END_MS
+STRESS_CPU_SWAP_MS
+STRESS_CPU_FRAME_TOTAL_MS
+STRESS_FRAME_CALLBACK_INTERVAL_MS
+STRESS_GPU_MS
+```
+
+It also derives MPixel/s and ns/pixel for every workload, an estimated ALU
+GFLOP/s based on the generated GLSL operation count, and texture samples/s and
+an approximate 16-byte/sample read rate. These are model-derived values, not
+Mali hardware counters; caches, compression, and compiler lowering mean that
+the texture byte rate is not DRAM bandwidth.
+
+### Live phase-two results
+
+The following short runs were executed on the target's Mali-G51 3-core driver
+(`Bifrost r9p0`, OpenGL ES 3.2). They are representative, not final thermal
+limits:
+
+| Backend/workload | Configuration | GPU p50 | Throughput | Notes |
+|---|---|---:|---:|---|
+| surfaceless fill | 1280x720 | 0.28 ms | ~3.00 Gpixel/s | 0.333 ns/pixel; minimal fragment path |
+| surfaceless fill | 1920x1080 | 0.63 ms | ~3.17 Gpixel/s | fill-rate remains approximately resolution-linear |
+| surfaceless fill | 3840x2160 | 2.50 ms | ~3.18 Gpixel/s | no compositor presentation involved |
+| surfaceless ALU | 1920x1080, highp, 1 iter | 8.44 ms | ~109–117 workloads/s | timer slots 8, 32, and 64 produced similar GPU p50 |
+| window-FBO ALU | 1920x1080, highp, 1 iter | 8.44 ms | ~109 workloads/s | within short-run variance of surfaceless |
+| surfaceless texture | 1920x1080, mediump, 4 iter, 256/1024 | 10.51 ms | ~86 workloads/s | 0.5/8 MiB working sets were similar |
+| surfaceless texture | 2048, coherent, 32 MiB | 10.80 ms | ~83 workloads/s | modest cache/working-set effect |
+| surfaceless texture | 2048, randomish, 32 MiB | ~242 ms | ~1.4 workloads/s | large deterministic cache-stressing cost; 8 disjoint samples discarded |
+
+The randomish pattern is intentionally deterministic and avoids trigonometric
+functions, but it still adds arithmetic to generate coordinates. It should be
+interpreted as a cache-hostile stress case, not as a pure DRAM bandwidth
+counter. The large latency and disjoint results make it unsuitable as a normal
+application model without longer repeated runs.
+
+With timer queries enabled, 8 slots caused many oldest-query waits but did not
+change GPU p50 relative to 32/64 slots. With timer queries disabled, the
+benchmark correctly exposes a much higher CPU submission rate, but only by
+periodically calling `glFinish()`; that mode measures command submission rather
+than completed GPU throughput and is therefore a control experiment, not a
+higher performance result.
+
+The target exposes the following relevant EGL capabilities:
+
+```text
+EGL_KHR_surfaceless_context       yes
+EGL_KHR_create_context            yes
+EGL_KHR_fence_sync                yes
+EGL_KHR_wait_sync                 yes
+EGL_KHR_image / image_base        yes
+EGL_ANDROID_native_fence_sync    no
+EGL_EXT_image_dma_buf_import     no
+EGL_EXT_image_dma_buf_import_modifiers no
+partial-update/swap-damage/age   no
+```
+
+No readable Mali hardware-counter interface was found in the repository SDK,
+the target's sysfs, `/sys/module/mali_kbase`, already-mounted debugfs, procfs,
+or `/proc/modules`. The driver exposes `gpuinfo`, fixed core availability
+(`0x7`), scheduling periods, power policy, memory-pool values, and runtime
+power state, but not shader/tiler/L2/busy counters. `galcore` is not the active
+Mali Bifrost driver for this target. A future counter implementation would need
+the vendor kernel's private kbase ioctl/debug interface or an instrumented
+firmware; none was safely discoverable here.
+
+The expanded `scripts/gpu_status.sh` remains read-only. It inspects generic
+devfreq, Mali modules, already-mounted debugfs, procfs references, counter-like
+nodes, thermal zones, clocks, and optional filtered `dmesg` output when
+`GPU_STATUS_DMESG=1`. It never mounts debugfs or writes a governor, frequency,
+voltage, OPP, or core mask.
+
+### Interpretation and remaining limits
+
+- The minimum measured fill cost is approximately 0.31–0.33 ns/pixel, or
+  roughly 3.1–3.2 Gpixel/s for this opaque single-render-target shader.
+- The current ALU highp 1-iteration case is around 8.4 ms GPU time at 1080p;
+  this is a workload ceiling, not the maximum FLOPS of the silicon.
+- `mediump` remains beneficial for suitable local math, but precision changes
+  must be validated per shader and visual result.
+- Texture sizes up to 8 MiB per texture did not materially change the coherent
+  case; the 32 MiB pair produced only a modest increase. The randomish case is
+  the first clear cache-hostile transition, but it is confounded by coordinate
+  generation and disjoint behavior. A true cache/DRAM boundary needs repeated,
+  randomized-order runs and vendor counters.
+- The surfaceless ALU result is close to the window-FBO result, so the FBO's
+  Wayland EGL association is not currently a dominant cost for this workload.
+- Presentation still loses throughput to webOS/surface-manager pacing; the
+  earlier `frame` and `swap` results remain the correct evidence for that path.
+- A long 30–60 second run is still needed to quantify thermal throttling because
+  no readable frequency or temperature telemetry is exposed by this firmware.
+
+`scripts/run_gpu_sweep.sh` provides bounded `SWEEP=quick` and `SWEEP=full`
+matrices and emits JSONL summaries suitable for plotting or aggregation.
+`STRESS_REPEAT=N` repeats each case in independent processes, and
+`scripts/summarize_gpu_sweep.py` computes mean, standard deviation, minimum,
+and maximum for the main throughput and timing fields. The sweep does not run
+automatically during install.
+
+## Phase 3: practical 60 Hz workload audit
+
+Phase 3 changes the question from “how many synthetic shader iterations can
+the GPU execute?” to “how much real application work fits in a stable 60 Hz
+frame?”. The production renderer remains unchanged. All new loads are opt-in
+stress-benchmark workloads or diagnostic scripts.
+
+### Methodology audit
+
+The following sources of bias were reviewed before adding workloads:
+
+| Source | Classification | Consequence |
+| --- | --- | --- |
+| Wayland frame callback and `eglSwapBuffers` pacing | Confirmed | `frame`/`swap` measure presentation/backpressure, not the GPU ceiling. |
+| Single fullscreen draw extrapolated to UI complexity | Confirmed | Previous ALU/fill numbers did not describe overdraw, blending, passes, or draw-call pressure. |
+| Timer queries and ring backpressure | Confirmed and instrumented | Results now report slots, waits, ring-full events, finishes, completed queries, and disjoint discards. `STRESS_GPU_TIMER=off` is a CPU-control run, not a completed-GPU measurement. |
+| Shader compiler removing unused work | Probable risk | Every stress result is folded into a color or consumes the previous pass/texture. The benchmark still cannot prove instruction-level execution without a Mali disassembler. |
+| Warmup, run order, DVFS, and thermal state | Probable | Use `STRESS_REPEAT`, independent processes, and JSONL aggregation. No readable frequency/temperature counters were found, so long-run throttling remains unconfirmed. |
+| Window surface versus GPU-only path | Low for tested workloads | Surfaceless/pbuffer and window-backed FBO results were very similar for the measured ALU case. |
+| Logging perturbation | Low | Progress logging is periodic; machine-readable output is emitted once at shutdown. |
+| ASTC “support” versus an actual compressed asset | Confirmed limitation | The TV advertises ASTC, but this repository has no encoder/assets; `STRESS_TEXTURE_FORMAT=astc` explicitly falls back to RGBA8888 and is not an ASTC performance result. |
+
+### New benchmark controls
+
+`wayland_egl_stress` now includes `overdraw`, `multipass`, `blur`, and
+`drawcalls` workloads. Important controls are:
+
+```text
+STRESS_LAYERS=1,2,4,8,16
+STRESS_BLEND=none|alpha|premultiplied|additive
+STRESS_PASSES=1,2,4,8
+STRESS_BLUR_TAPS=3|5|9
+STRESS_DRAWS=1|10|100|500|1000
+STRESS_PROGRAM_SWITCHES=0|1|10|100
+STRESS_BATCH=0|1
+STRESS_TEXTURE_FORMAT=rgba8888|rgb565|etc2|astc
+STRESS_FILTER=nearest|linear|trilinear
+STRESS_TEXTURE_SAMPLES=1|2|4|8|16
+STRESS_TEXTURE_LAYOUT=separate|atlas
+```
+
+The ETC2/ASTC modes currently report the requested format but upload a
+deliberate RGBA8888 fallback. RGB565 is a real upload path. `STRESS_BATCH=1`
+is a command-pressure control (one draw instead of N); it is not yet a full
+sprite/instance batching implementation, so it must not be read as a complete
+UI batching result.
+
+`STRESS_PACING=pbuffer` prefers `EGL_KHR_surfaceless_context` and falls back
+to an EGL pbuffer. Multipass and blur require an offscreen FBO and therefore
+use `offscreen` or `pbuffer`, not a presented window. JSONL now carries the
+workload parameters, blend name, pass/layer/draw counts, program switches,
+batch flag, texture controls, GPU percentiles, CPU sections, and timer
+counters. `scripts/summarize_gpu_sweep.py` aggregates repeated runs and
+includes standard deviation/min/max.
+
+### Measurements on the target TV
+
+These are short, representative 1080p surfaceless/pbuffer runs with timer
+queries enabled. They are measured observations, not silicon specifications;
+repeat them with the exact workload and thermal state needed for a release
+decision.
+
+| Workload | Configuration | GPU p50 (ms) | GPU p95 (ms) | Interpretation |
+| --- | --- | ---: | ---: | --- |
+| Overdraw | opaque, 1/2/4/8 layers | 0.63 / 0.92 / 1.52 / 2.72 | ~0.66 / 0.98 / 1.57 / 2.74 | Opaque layers scale predictably and remain cheap at eight layers. |
+| Overdraw | alpha, 1/2/4/8 layers | 1.08 / 1.60 / 2.67 / 4.80 | approximately the same order | Fullscreen transparency costs materially more than opaque writes. |
+| Overdraw | additive, 1/2/4/8 layers | 1.08 / 1.60 / 2.67 / 4.80 | approximately the same order | Additive blending is not free; it tracked alpha in this shader. |
+| Multipass | 1/2/4/8 fullscreen passes | 7.17 / 14.35 / 28.67 / 57.10 | 7.23 / 14.45 / 28.72 / 57.18 | Fullscreen passes are close to linear and dominate quickly. |
+| Blur | 2 passes, 3/5/9 taps | 15.24 / 15.98 / 18.30 | 15.31 / 16.02 / 18.37 | This simple blur is already near/over a 16.67 ms frame. |
+| Draw calls | 1/100/500 draws, 1x1 control viewport | 0.09 / 0.68 / 2.87 | — | CPU submit overhead becomes visible before the GPU is saturated. |
+| Draw calls | 500-draw command control with `STRESS_BATCH=1` | 0.09 | — | One draw removes the measured command overhead; this is not sprite batching. |
+| Texture | 1/4/8 samples, 1024 RGBA, separate | 9.52 / 12.01 / 17.41 | — | Texture samples consume the 12–16 ms budget before extreme cache-hostile access. |
+| Texture | 8 samples, linear RGB565 or atlas | ~17.37 / ~17.41 | — | No material gain was observed in this synthetic case. |
+
+The earlier phase-two results remain important: fill is approximately
+3.1–3.2 Gpixel/s (about 0.31–0.33 ns/pixel), ALU highp is about 8.44 ms at
+1080p for the reference shader, coherent texture loads are about 10.5–10.8 ms,
+and the randomish 2048 texture case reached about 242 ms with disjoint
+samples. The latter is a cache-hostile stress result, not a DRAM bandwidth
+counter.
+
+### Practical 60 Hz envelope
+
+For this TV, use the following engineering classes until application-specific
+measurements justify a different budget:
+
+| Class | GPU p95 target | Use |
+| --- | ---: | --- |
+| Conservative production | < 10 ms | Animated UI, input-heavy scenes, or uncertain thermal/compositor conditions. |
+| Recommended production | < 12 ms | Normal 60 Hz application frame, leaving useful room for jitter and non-GPU work. |
+| Absolute stress ceiling | < 16 ms | A measured upper bound below the 16.67 ms interval; too little headroom for a consistently smooth product. |
+
+These are budgets, not claims that the compositor always consumes a fixed
+number of milliseconds. `scripts/find_gpu_budget.sh` sweeps iterations,
+layers, or passes and reports the largest tested value below each p95 limit:
+
+```bash
+BUDGET_WORKLOAD=alu BUDGET_PRECISION=mediump \
+  BUDGET_VALUES=1,2,4,8,16,32,64 ./scripts/find_gpu_budget.sh
+BUDGET_WORKLOAD=overdraw BUDGET_VALUES=1,2,4,8 \
+  ./scripts/find_gpu_budget.sh
+BUDGET_WORKLOAD=multipass BUDGET_VALUES=1,2,4,8 \
+  ./scripts/find_gpu_budget.sh
+```
+
+The values are empirical thresholds for the selected shader and resolution;
+do not generalize an ALU iteration count to an unrelated material.
+
+### Answers and remaining hypotheses
+
+- **How much real work fits at 1080p/60?** A single reference ALU pass or up to
+  several opaque fullscreen layers fit comfortably, while two reference
+  multipass passes are already around the recommended/absolute boundary.
+  Real scenes must be measured with their shader, geometry, and texture set.
+- **How much overdraw is acceptable?** Eight opaque layers were cheap in this
+  test; eight alpha layers were about 4.8 ms. That is not permission to use
+  eight fullscreen transparent layers everywhere because geometry, blending,
+  and other passes consume the same budget.
+- **How much does mediump help?** Phase two confirmed a material ALU gain;
+  phase three keeps precision selectable for overdraw/texture/multipass but
+  does not claim a universal speedup. Validate visual error per shader.
+- **When is cache pressure visible?** Coherent textures through 2048 remained
+  close; randomish 2048 was catastrophically slower. The exact cache/DRAM
+  boundary cannot be identified without vendor counters.
+- **Can we read Bifrost counters?** No safe public interface was found in
+  sysfs, already-mounted debugfs, procfs, the SDK, or the target modules.
+- **What is the optimal application strategy?** Keep surfaces opaque where
+  possible, use mediump for safe local math, avoid unnecessary fullscreen
+  passes and transparent overdraw, batch real UI geometry, reuse textures and
+  programs, render only when content changes, and reserve p95 headroom for
+  compositor and thermal variance.
+
+The opt-in `EGL_LATENCY_TRACE=1` path in the normal renderer records software
+timestamps for input-to-submit, input-to-swap-return, input-to-frame-callback,
+and callback jitter. It is not input-to-photon measurement, and launcher
+environment propagation must be verified when collecting it through SAM.
 
 ## Remaining opportunities
 

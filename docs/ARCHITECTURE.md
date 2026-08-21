@@ -160,28 +160,46 @@ remain a diagnostics and fallback path.
 ## Stress renderer
 
 `wayland_egl_stress` uses a full-screen triangle and a fragment shader to cover
-the complete render target. It has three deliberately separate measurement
+the complete render target. It has four deliberately separate measurement
 paths: frame-callback presentation, swap-without-frame-callback presentation,
-and an FBO-only path that avoids presenting each iteration. The FBO path limits
-GPU work in flight so it measures completed work rather than an ever-growing
+a window-backed FBO path, and a pbuffer/surfaceless EGL path that avoids both
+presentation and the Wayland EGL window surface. The offscreen paths limit GPU
+work in flight so they measure completed work rather than an ever-growing
 submission queue.
 
 The shader is generated with a constant loop bound for the GLES compiler and
-supports ALU, SFU, and texture workloads, iteration counts from 1 through 64,
-and highp/mediump comparison. GPU timing uses dynamically loaded
+supports fill, ALU, SFU, texture, overdraw, multipass, blur, and draw-call
+workloads. It parameterizes iteration counts, layers, blend modes, passes,
+draws, texture working sets, filters, samples, and deterministic access
+patterns, while retaining highp/mediump comparison. GPU timing uses dynamically loaded
 `GL_EXT_disjoint_timer_query` functions when the driver advertises them; CPU
-submit timing is collected independently. Resolution, window color format, and
-optional IMG context priority are benchmark variables, never production
-defaults.
+draw, query, swap, frame-total, and frame-callback timing are collected
+independently. Resolution, window color format, timer depth, timer enablement,
+texture pattern, output format, and optional IMG context priority are benchmark
+variables, never production defaults.
 
-Timing uses `CLOCK_MONOTONIC` and reports workload FPS, presented FPS, CPU
-submit percentiles, and GPU percentiles. It is packaged only when
-`INCLUDE_STRESS=1` is supplied to the installer.
+Overdraw uses controlled fullscreen layers with none, alpha, premultiplied, or
+additive blending. Multipass ping-pongs two RGBA8 FBO textures; blur uses a
+small separable-style kernel. The draw-call workload uses a 1x1 viewport to
+measure CPU/driver command pressure without conflating it with full-screen
+fragment cost. These are benchmark-only paths.
+
+Timing uses `CLOCK_MONOTONIC` and reports workload FPS, presented FPS, derived
+MPixel/s and ns/pixel, machine-readable JSONL/TSV summaries, and percentiles
+for every relevant CPU/GPU metric. Timer waits, ring pressure, finishes,
+completed queries, and disjoint samples are explicit counters. It is packaged
+only when `INCLUDE_STRESS=1` is supplied to the installer.
 
 `egl_diagnostics.c` logs full EGL/GL strings and selected profiling-related
 extensions. On the target, timer queries are available but partial-update,
 buffer-age, and swap-with-damage extensions are absent, so the normal renderer
 continues to use conservative full-frame presentation.
+
+`EGL_LATENCY_TRACE=1` is an opt-in normal-renderer diagnostic. It records
+software timestamps from input callbacks through render submit, swap return, and
+the next Wayland frame callback, including callback jitter percentiles. It does
+not claim input-to-photon latency and allocates no tracing buffers unless the
+variable is enabled.
 
 ## webOS-specific protocols
 

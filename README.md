@@ -104,6 +104,9 @@ scripts/
   build.sh                   cross-build and ABI checks
   package_ipk.sh             optional standard IPK packaging
   gpu_status.sh              read-only Mali/devfreq/thermal diagnostics
+  run_gpu_sweep.sh           quick/production/full machine-readable matrix
+  find_gpu_budget.sh         p95 complexity-budget sweep
+  summarize_gpu_sweep.py     repeat mean/stddev/min/max aggregation
   install_tv_lowspace.sh     canonical installer
   launch_tv.sh               SAM launch and diagnostics
   stop_tv.sh                 targeted application shutdown
@@ -113,6 +116,7 @@ scripts/
 docs/
   ARCHITECTURE.md
   OPERATIONS.md
+  GPU_PERFORMANCE_GUIDE.md
   PERFORMANCE_AUDIT.md
 
 dist/                        generated, ignored build output
@@ -289,21 +293,76 @@ ssh root@192.168.2.121 \
 Compare EGL/surface-manager pacing with interval zero:
 
 ```bash
-STRESS_PACING=swap STRESS_SWAP_INTERVAL=0
+ssh root@192.168.2.121 \
+  'APP_ID=org.webosbrew.wayland XDG_RUNTIME_DIR=/tmp/xdg \
+   WAYLAND_DISPLAY=wayland-0 STRESS_PACING=swap STRESS_SWAP_INTERVAL=0 \
+   STRESS_DURATION_MS=10000 \
+   /media/developer/apps/usr/palm/applications/org.webosbrew.wayland/bin/wayland_egl_stress'
 ```
 
-Measure GPU work without presenting each iteration:
+Measure GPU work without presenting each iteration (window-backed FBO):
 
 ```bash
-STRESS_PACING=offscreen STRESS_WORKLOAD=alu STRESS_ITERS=16 \
-STRESS_PRECISION=mediump STRESS_RESOLUTION=4k
+ssh root@192.168.2.121 \
+  'APP_ID=org.webosbrew.wayland XDG_RUNTIME_DIR=/tmp/xdg \
+   WAYLAND_DISPLAY=wayland-0 STRESS_PACING=offscreen \
+   STRESS_WORKLOAD=alu STRESS_ITERS=16 STRESS_PRECISION=mediump \
+   STRESS_RESOLUTION=4k STRESS_DURATION_MS=10000 \
+   /media/developer/apps/usr/palm/applications/org.webosbrew.wayland/bin/wayland_egl_stress'
 ```
 
-Change the workload with `STRESS_WORKLOAD=alu|sfu|bandwidth`, the loop count
+Measure with a surfaceless EGL context when supported, falling back to a
+pbuffer:
+
+```bash
+ssh root@192.168.2.121 \
+  'APP_ID=org.webosbrew.wayland XDG_RUNTIME_DIR=/tmp/xdg \
+   WAYLAND_DISPLAY=wayland-0 STRESS_PACING=pbuffer \
+   STRESS_WORKLOAD=alu STRESS_ITERS=16 STRESS_RESOLUTION=1080p \
+   STRESS_TIMER_SLOTS=32 STRESS_GPU_TIMER=on STRESS_OUTPUT=jsonl \
+   /media/developer/apps/usr/palm/applications/org.webosbrew.wayland/bin/wayland_egl_stress'
+```
+
+Change the workload with `STRESS_WORKLOAD=fill|alu|sfu|bandwidth|overdraw|multipass|blur|drawcalls`, the loop count
 with `STRESS_ITERS=1|2|4|8|16|32|64`, and precision with
 `STRESS_PRECISION=highp|mediump|auto`. `STRESS_WIDTH` and `STRESS_HEIGHT` can
-override presets. The output separates `STRESS_CPU_SUBMIT_MS` from
-`STRESS_GPU_MS` and includes average, p50, p95, and p99.
+override presets (`720p`, `1080p`, `1440p`, `4k`). `fill` reports MPixel/s and
+ns/pixel. The output separates draw, timer calls, swap, frame-total, callback,
+and GPU timing, each with average, p50, p95, and p99.
+
+The practical UI loads are controlled with `STRESS_LAYERS`,
+`STRESS_BLEND=none|alpha|premultiplied|additive`, `STRESS_PASSES`,
+`STRESS_BLUR_TAPS`, `STRESS_DRAWS`, `STRESS_PROGRAM_SWITCHES`, and
+`STRESS_BATCH`. Texture experiments additionally accept
+`STRESS_TEXTURE_FORMAT`, `STRESS_FILTER`, `STRESS_TEXTURE_SAMPLES`, and
+`STRESS_TEXTURE_LAYOUT`; see `docs/PERFORMANCE_AUDIT.md` for the measured
+limitations of the ETC2/ASTC fallback and the command-pressure batch control.
+
+Timer profiling and texture controls are explicit:
+
+```text
+STRESS_GPU_TIMER=on|off
+STRESS_TIMER_SLOTS=8|16|32|64
+STRESS_TEXTURE_SIZE=256|512|1024|2048|4096
+STRESS_TEXTURE_PATTERN=coherent|stride|randomish
+STRESS_OUTPUT=human|jsonl|tsv
+STRESS_CPU_AFFINITY=<cpu-index>       # opt-in benchmark-only pinning
+```
+
+Use `STRESS_GPU_TIMER=off` only as a CPU submission/control experiment. Without
+timer queries the benchmark uses periodic `glFinish()` backpressure and its
+workload FPS is not a completed-GPU throughput measurement.
+
+Run the bounded sweep from the development host:
+
+```bash
+SWEEP=quick ./scripts/run_gpu_sweep.sh > sweep.jsonl
+SWEEP=production ./scripts/run_gpu_sweep.sh > sweep-production.jsonl
+SWEEP=full SWEEP_DURATION_MS=2500 ./scripts/run_gpu_sweep.sh > sweep-full.jsonl
+STRESS_REPEAT=3 SWEEP=quick ./scripts/run_gpu_sweep.sh > sweep-repeat.jsonl
+python3 scripts/summarize_gpu_sweep.py sweep-repeat.jsonl > sweep-summary.jsonl
+BUDGET_WORKLOAD=overdraw BUDGET_VALUES=1,2,4,8 ./scripts/find_gpu_budget.sh
+```
 
 Optional experiments are `EGL_COLOR_MODE=auto|8888|rgb888|565` and
 `EGL_CONTEXT_PRIORITY=default|high`. Keep these out of production until the

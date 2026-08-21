@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <time.h>
 
 #ifndef KEY_ESC
 #define KEY_ESC 1
@@ -68,7 +69,34 @@ struct app {
     uint32_t first_frame_time;
     float animation_time;
     int have_frame_time;
+
+    int latency_trace;
+    unsigned long long input_serial;
+    unsigned long long rendered_input_serial;
+    double last_input_sec;
+    double last_callback_sec;
+    double *callback_intervals;
+    double *input_submit_samples;
+    double *input_swap_samples;
+    double *input_callback_samples;
+    size_t callback_count;
+    size_t input_submit_count;
+    size_t input_swap_count;
+    size_t input_callback_count;
 };
+
+#define EGL_LATENCY_MAX_SAMPLES 2048
+
+static double monotonic_sec(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) < 0) return 0.0;
+    return (double)ts.tv_sec + (double)ts.tv_nsec / 1000000000.0;
+}
+
+static void latency_record(double *values, size_t *count, double value) {
+    if (!values || *count >= EGL_LATENCY_MAX_SAMPLES) return;
+    values[(*count)++] = value;
+}
 
 static void die_egl(const char *where) {
     fprintf(stderr, "EGL_ERROR %s err=0x%04x\n", where, eglGetError());
@@ -374,8 +402,67 @@ static void webos_close_requested(void *data) {
     a->running = 0;
 }
 
+static int latency_compare(const void *left, const void *right) {
+    double a = *(const double *)left;
+    double b = *(const double *)right;
+    return a < b ? -1 : a > b ? 1 : 0;
+}
+
+static void latency_log_metric(const char *name, const double *values, size_t count) {
+    if (!values || count == 0) {
+        fprintf(stderr, "EGL_LATENCY_%s count=0\n", name);
+        return;
+    }
+    double *copy = malloc(count * sizeof(*copy));
+    if (!copy) return;
+    memcpy(copy, values, count * sizeof(*copy));
+    qsort(copy, count, sizeof(*copy), latency_compare);
+    double sum = 0.0;
+    for (size_t i = 0; i < count; i++) sum += copy[i];
+    size_t p50 = (size_t)((count - 1) * 0.50);
+    size_t p95 = (size_t)((count - 1) * 0.95);
+    size_t p99 = (size_t)((count - 1) * 0.99);
+    size_t missed_25 = 0;
+    size_t missed_40 = 0;
+    for (size_t i = 0; i < count; i++) {
+        if (copy[i] >= 25.0) missed_25++;
+        if (copy[i] >= 40.0) missed_40++;
+    }
+    fprintf(stderr, "EGL_LATENCY_%s count=%zu avg=%.3f p50=%.3f p95=%.3f p99=%.3f max=%.3f\n",
+            name, count, sum / (double)count, copy[p50], copy[p95], copy[p99], copy[count - 1]);
+    if (strstr(name, "FRAME_CALLBACK") != NULL) {
+        fprintf(stderr, "EGL_LATENCY_%s intervals_ge_25ms=%zu intervals_ge_40ms=%zu\n",
+                name, missed_25, missed_40);
+    }
+    free(copy);
+}
+
+static void latency_log_summary(struct app *a) {
+    if (!a->latency_trace) return;
+    latency_log_metric("FRAME_CALLBACK_INTERVAL_MS", a->callback_intervals, a->callback_count);
+    latency_log_metric("INPUT_TO_SUBMIT_MS", a->input_submit_samples, a->input_submit_count);
+    latency_log_metric("INPUT_TO_SWAP_RETURN_MS", a->input_swap_samples, a->input_swap_count);
+    latency_log_metric("INPUT_TO_FRAME_CALLBACK_MS", a->input_callback_samples, a->input_callback_count);
+}
+
 static void frame_done(void *data, struct wl_callback *cb, uint32_t time) {
     struct app *a = data;
+    double callback_sec = monotonic_sec();
+
+    if (a->latency_trace) {
+        if (a->last_callback_sec > 0.0) {
+            latency_record(a->callback_intervals, &a->callback_count,
+                           (callback_sec - a->last_callback_sec) * 1000.0);
+        }
+        if (a->last_input_sec > 0.0 &&
+            a->input_serial != a->rendered_input_serial) {
+            latency_record(a->input_callback_samples, &a->input_callback_count,
+                           (callback_sec - a->last_input_sec) * 1000.0);
+            fprintf(stderr, "EGL_LATENCY_CALLBACK input_to_callback_ms=%.3f\n",
+                    (callback_sec - a->last_input_sec) * 1000.0);
+        }
+        a->last_callback_sec = callback_sec;
+    }
 
     if (cb) wl_callback_destroy(cb);
     a->frame_cb = NULL;
@@ -397,6 +484,9 @@ static const struct wl_callback_listener frame_listener = {
 
 static void render(struct app *a) {
     if (!a->running || !a->render_visible) return;
+
+    double render_start_sec = monotonic_sec();
+    unsigned long long render_input_serial = a->input_serial;
 
     float t = a->animation_time;
 
@@ -441,6 +531,17 @@ static void render(struct app *a) {
     if (!eglSwapBuffers(a->egl_display, a->egl_surface)) {
         die_egl("eglSwapBuffers");
         a->running = 0;
+    }
+
+    if (a->latency_trace && render_input_serial != a->rendered_input_serial &&
+        a->last_input_sec > 0.0) {
+        double submit_ms = (render_start_sec - a->last_input_sec) * 1000.0;
+        double swap_ms = (monotonic_sec() - a->last_input_sec) * 1000.0;
+        latency_record(a->input_submit_samples, &a->input_submit_count, submit_ms);
+        latency_record(a->input_swap_samples, &a->input_swap_count, swap_ms);
+        fprintf(stderr, "EGL_LATENCY_RENDER input_to_submit_ms=%.3f input_to_swap_return_ms=%.3f\n",
+                submit_ms, swap_ms);
+        a->rendered_input_serial = render_input_serial;
     }
 
     if ((a->frame % 60) == 0) {
@@ -493,6 +594,9 @@ static void input_pointer_enter(void *data, int x, int y) {
     a->have_pointer = 1;
     a->pointer_x = x;
     a->pointer_y = y;
+    a->last_input_sec = monotonic_sec();
+    a->input_serial++;
+    if (a->latency_trace) fprintf(stderr, "EGL_LATENCY_INPUT type=enter\n");
 }
 
 static void input_pointer_leave(void *data) {
@@ -505,6 +609,8 @@ static void input_pointer_motion(void *data, int x, int y) {
     a->have_pointer = 1;
     a->pointer_x = x;
     a->pointer_y = y;
+    a->last_input_sec = monotonic_sec();
+    a->input_serial++;
 }
 
 static void input_pointer_button(
@@ -524,6 +630,9 @@ static void input_pointer_button(
 
         fprintf(stderr, "EGL_CLICK theme=%d offset=%.2f,%.2f\n",
                 a->theme, a->offset_x, a->offset_y);
+        a->last_input_sec = monotonic_sec();
+        a->input_serial++;
+        if (a->latency_trace) fprintf(stderr, "EGL_LATENCY_INPUT type=button\n");
     }
 }
 
@@ -536,6 +645,10 @@ static void input_keyboard_key(void *data, uint32_t key, uint32_t state) {
     struct app *a = data;
 
     if (state != WL_KEYBOARD_KEY_STATE_PRESSED) return;
+
+    a->last_input_sec = monotonic_sec();
+    a->input_serial++;
+    if (a->latency_trace) fprintf(stderr, "EGL_LATENCY_INPUT type=key key=%u\n", key);
 
     if (key == KEY_ESC || key == KEY_BACK) {
         fprintf(stderr, "EXIT_KEY key=%u\n", key);
@@ -610,6 +723,29 @@ int main(int argc, char **argv) {
 
     struct app a;
     memset(&a, 0, sizeof(a));
+    a.latency_trace = getenv("EGL_LATENCY_TRACE") &&
+                      strcmp(getenv("EGL_LATENCY_TRACE"), "1") == 0;
+    if (a.latency_trace) {
+        a.callback_intervals = calloc(EGL_LATENCY_MAX_SAMPLES, sizeof(double));
+        a.input_submit_samples = calloc(EGL_LATENCY_MAX_SAMPLES, sizeof(double));
+        a.input_swap_samples = calloc(EGL_LATENCY_MAX_SAMPLES, sizeof(double));
+        a.input_callback_samples = calloc(EGL_LATENCY_MAX_SAMPLES, sizeof(double));
+        if (!a.callback_intervals || !a.input_submit_samples ||
+            !a.input_swap_samples || !a.input_callback_samples) {
+            fprintf(stderr, "EGL_LATENCY_TRACE allocation failed; disabled\n");
+            free(a.callback_intervals);
+            free(a.input_submit_samples);
+            free(a.input_swap_samples);
+            free(a.input_callback_samples);
+            a.callback_intervals = NULL;
+            a.input_submit_samples = NULL;
+            a.input_swap_samples = NULL;
+            a.input_callback_samples = NULL;
+            a.latency_trace = 0;
+        } else {
+            fprintf(stderr, "EGL_LATENCY_TRACE enabled=1\n");
+        }
+    }
     const char *color_mode = getenv("EGL_COLOR_MODE");
     if (color_mode && (strcmp(color_mode, "auto") == 0 ||
                        strcmp(color_mode, "8888") == 0 ||
@@ -707,6 +843,7 @@ int main(int argc, char **argv) {
         }
     }
 
+    latency_log_summary(&a);
     fprintf(stderr, "wayland_egl exit\n");
 
     if (a.frame_cb) wl_callback_destroy(a.frame_cb);
@@ -737,6 +874,11 @@ int main(int argc, char **argv) {
     if (a.compositor) wl_compositor_destroy(a.compositor);
     if (a.registry) wl_registry_destroy(a.registry);
     if (a.display) wl_display_disconnect(a.display);
+
+    free(a.callback_intervals);
+    free(a.input_submit_samples);
+    free(a.input_swap_samples);
+    free(a.input_callback_samples);
 
     return 0;
 }

@@ -190,10 +190,48 @@ for a controlled benchmark:
 INCLUDE_STRESS=1 ./scripts/install_tv_lowspace.sh
 ```
 
-Its `frame`, `swap`, and `offscreen` pacing modes are documented in
-`docs/PERFORMANCE_AUDIT.md`. Always record `STRESS_SUMMARY`,
-`STRESS_CPU_SUBMIT_MS`, and `STRESS_GPU_MS` together; presented FPS alone cannot
-distinguish compositor pacing from Mali throughput.
+Its `frame`, `swap`, `offscreen`, and `pbuffer` pacing modes are documented in
+`docs/PERFORMANCE_AUDIT.md`. The pbuffer mode uses a surfaceless context when
+the EGL extension is available. Always record `STRESS_SUMMARY`, the separate
+CPU draw/query/swap/frame metrics, and `STRESS_GPU_MS` together; presented FPS
+alone cannot distinguish compositor pacing from Mali throughput.
+
+For repeatable machine-readable runs:
+
+```bash
+SWEEP=quick ./scripts/run_gpu_sweep.sh > sweep.jsonl
+```
+
+The benchmark supports `STRESS_GPU_TIMER=on|off`, `STRESS_TIMER_SLOTS`,
+`STRESS_TEXTURE_SIZE`, `STRESS_TEXTURE_PATTERN`, `STRESS_OUTPUT=jsonl|tsv`, and
+the benchmark-only `STRESS_CPU_AFFINITY`. Timer-disabled runs are CPU submission
+controls and use periodic fallback synchronization; they are not completed-GPU
+throughput measurements. Use `STRESS_REPEAT=3` with the sweep for independent
+process launches, then aggregate with:
+
+```bash
+python3 scripts/summarize_gpu_sweep.py sweep.jsonl > sweep-summary.jsonl
+```
+
+The aggregation reports mean, standard deviation, minimum, and maximum for
+workload FPS, GPU p50/p95/average, MPixel/s, and ns/pixel. Use
+`SWEEP=production` for the bounded UI-oriented matrix, or `SWEEP=full` for the
+larger exploration matrix.
+
+Find a safe p95 complexity budget directly:
+
+```bash
+BUDGET_WORKLOAD=alu BUDGET_PRECISION=mediump \
+  ./scripts/find_gpu_budget.sh
+
+BUDGET_WORKLOAD=overdraw BUDGET_VALUES=1,2,4,8 \
+  ./scripts/find_gpu_budget.sh
+```
+
+For opt-in normal-renderer software latency tracing, launch the normal binary
+with `EGL_LATENCY_TRACE=1`. The log reports input-to-submit,
+input-to-swap-return, input-to-frame-callback, and frame-callback interval
+percentiles. It is not an input-to-photon measurement.
 
 The audited firmware requires an SSH pseudo-terminal for remote `luna-send`
 calls. The launch, status, stop, and installer scripts therefore use `ssh -tt`

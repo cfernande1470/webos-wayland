@@ -52,7 +52,20 @@ void egl_log_capabilities(EGLDisplay display, const char *label) {
     log_extension_flag("EGL", egl_extensions, "EGL_EXT_buffer_age");
     log_extension_flag("EGL", egl_extensions, "EGL_IMG_context_priority");
     log_extension_flag("EGL", egl_extensions, "EGL_ARM_implicit_external_sync");
+    log_extension_flag("EGL", egl_extensions, "EGL_KHR_surfaceless_context");
+    log_extension_flag("EGL", egl_extensions, "EGL_KHR_create_context");
+    log_extension_flag("EGL", egl_extensions, "EGL_KHR_fence_sync");
+    log_extension_flag("EGL", egl_extensions, "EGL_KHR_wait_sync");
+    log_extension_flag("EGL", egl_extensions, "EGL_ANDROID_native_fence_sync");
+    log_extension_flag("EGL", egl_extensions, "EGL_KHR_image");
+    log_extension_flag("EGL", egl_extensions, "EGL_KHR_image_base");
+    log_extension_flag("EGL", egl_extensions, "EGL_EXT_image_dma_buf_import");
+    log_extension_flag("EGL", egl_extensions, "EGL_EXT_image_dma_buf_import_modifiers");
     log_extension_flag("GL", gl_extensions, "GL_EXT_disjoint_timer_query");
     log_extension_flag("GL", gl_extensions, "GL_EXT_multisampled_render_to_texture");
     log_extension_flag("GL", gl_extensions, "GL_EXT_shader_framebuffer_fetch");
+    log_extension_flag("GL", gl_extensions, "GL_KHR_texture_compression_astc_ldr");
+    log_extension_flag("GL", gl_extensions, "GL_OES_texture_compression_astc");
+    log_extension_flag("GL", gl_extensions, "GL_OES_compressed_ETC2_RGB8_texture");
+    log_extension_flag("GL", gl_extensions, "GL_EXT_texture_compression_s3tc");
 }
