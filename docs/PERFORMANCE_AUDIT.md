@@ -99,6 +99,134 @@ The changes preserve frame rate and slightly reduce measured CPU time within
 normal run-to-run variance. The important verified improvements are correct
 input binding, stable launcher identity, and the compositor opacity hint.
 
+## Mali benchmark and bottleneck separation
+
+The original stress renderer had `STRESS_SWAP_INTERVAL=0`, but that did not
+remove its `wl_surface_frame` dependency: `render()` installed a frame callback
+and `frame_done()` scheduled every subsequent render. It therefore measured a
+compositor-paced workload, not the GPU ceiling.
+
+The stress renderer now has three explicit pacing modes:
+
+```text
+STRESS_PACING=frame      surface presentation plus wl_surface_frame
+STRESS_PACING=swap       surface presentation, eglSwapInterval(0), no frame callback
+STRESS_PACING=offscreen  FBO rendering with no presentation per iteration
+```
+
+`swap` is useful because it tests whether EGL/surface-manager still blocks. On
+this TV it remained at approximately 59.3 FPS and showed approximately 16.6 ms
+GPU query p50, so `eglSwapBuffers`/the webOS surface path remains paced even with
+interval zero. `offscreen` is the useful GPU-throughput mode; it uses a bounded
+number of GPU queries in flight and applies backpressure, preventing an
+unbounded command queue from turning final `glFinish()` into a misleading hang.
+
+The target exposes `GL_EXT_disjoint_timer_query`. The benchmark loads its entry
+points dynamically, keeps eight queries in flight, polls availability without
+blocking, and discards disjoint samples. It reports CPU submit time and GPU
+time separately with average, p50, p95, and p99 values. A short verified run
+at 1920x1080, ALU workload, one iteration produced:
+
+```text
+frame:    59.32 workload FPS, GPU p50 10.60 ms, CPU submit p50 0.22 ms
+swap:     59.29 workload FPS, GPU p50 16.62 ms, CPU submit p50 15.59 ms
+offscreen:117.07 workload FPS, GPU p50  8.38 ms, CPU submit p50 0.04 ms
+```
+
+These values show that the normal 60 FPS result is not proof of GPU saturation:
+the compositor and EGL queue constrain presentation, while offscreen rendering
+exposes additional GPU headroom for this particular shader.
+
+The shader is now parameterized and separated into workloads:
+
+```text
+STRESS_WORKLOAD=alu        vector multiply/add/dot operations
+STRESS_WORKLOAD=sfu        sin/cos/sqrt/inversesqrt/pow
+STRESS_WORKLOAD=bandwidth  two repeat-sampled RGBA textures
+STRESS_ITERS=1|2|4|8|16|32|64
+STRESS_PRECISION=highp|mediump|auto
+STRESS_RESOLUTION=1080p|1440p|4k
+```
+
+At 1920x1080, 16 ALU iterations measured GPU p50 approximately 30.15 ms in
+highp and 21.29 ms in mediump. At 3840x2160 and four iterations, the measured
+p50 was approximately 49.64 ms highp versus 40.50 ms mediump. This is a
+measured driver/compiler result, not an assumption that all application math
+can safely be reduced to FP16. Coordinate and accumulation precision must still
+be evaluated per workload.
+
+At 1920x1080, mediump and 16 iterations measured GPU p50 approximately 21.33 ms
+for ALU, 48.58 ms for SFU, and 31.87 ms for the texture workload. These are
+synthetic shader workloads; they identify sensitivity to ALU, special-function,
+and texture paths but do not predict an application's exact frame time.
+
+The benchmark also supports:
+
+```text
+EGL_COLOR_MODE=auto|8888|rgb888|565
+EGL_CONTEXT_PRIORITY=default|high
+STRESS_DURATION_MS=...       (default 10000)
+STRESS_WARMUP_MS=...         (default 1000)
+STRESS_OFFSCREEN_BATCH=...   fallback backpressure when timer queries are absent
+```
+
+On the target, `EGL_IMG_context_priority` is available and high priority is
+accepted (`actual=0x3101`), but the short comparison showed no meaningful GPU
+improvement. It changes scheduling priority, not shader-core FLOPS, and remains
+opt-in. RGB565 is window-capable (`EGL_CONFIG id=5`, 5/6/5/0), while a separate
+alpha-free RGB888 config was not available. RGB565 remains experimental because
+the offscreen target does not measure compositor conversion, banding, or final
+presentation quality.
+
+The runtime logs full EGL and GL extension strings. The target supports
+`GL_EXT_disjoint_timer_query`, `GL_OES_vertex_array_object`, ASTC, and several
+Mali/ARM extensions. It does not advertise `EGL_KHR_partial_update`, either
+swap-with-damage extension, or buffer age. No partial-damage path was added:
+there is no safe extension combination to activate on this firmware, and the
+normal renderer's full clear/animation would make an unsafe damage path worse
+than a conservative full update.
+
+The cross compiler reports ARMv7-A, Cortex-A9 defaults, NEON FP16, and
+`-mfloat-abi=softfp`, while the TV's CPUs identify as ARM Cortex-A55. The
+default ABI is retained for compatibility. `scripts/build.sh` accepts
+`EXTRA_CFLAGS` for explicitly separated experiments, but no `-mcpu=cortex-a55`,
+`-O3`, `-ffast-math`, LTO, or hard-float flags are enabled by default.
+
+The firmware has no `/sys/class/devfreq` node and no readable thermal-zone
+entries. The Mali platform driver does expose `gpuinfo`, a fixed core policy,
+core mask `0x7` for all three job slots, scheduling periods, and memory-pool
+values. `scripts/gpu_status.sh` collects these read-only values and must be run
+before/during/after a benchmark; it never changes governors, clocks, voltage, or
+core masks.
+
+## Additional hot-path audit
+
+The render loops do not call `glFinish`, `glReadPixels`, or `glFlush` per frame,
+do not upload buffers or recreate programs/textures, and do not allocate in the
+normal frame path. Wayland dispatch is used for lifecycle/input events; there
+are no per-frame roundtrips. The normal renderer has one static VBO and one
+program. Its repeated viewport/attribute setup costs are small compared with a
+full-screen fragment workload, and the measured CPU submit cost is low.
+
+The stress renderer intentionally keeps the full-screen triangle and repeated
+uniform/state setup visible so its CPU submit metric remains honest. VAOs are
+available (`GL_OES_vertex_array_object`), but adding a VAO to a single-draw
+benchmark would measure a tiny driver-state difference rather than improve the
+normal application's GPU throughput. It remains a possible microbenchmark, not
+a production change.
+
+The current shaders have one fullscreen primitive, no blending, no depth or
+stencil attachment, and an opaque output. This is favorable for a tile-based
+Mali path. Direct scanout cannot be inferred from Wayland/EGL client behavior;
+surface-manager policy, format, fullscreen state, and other overlays decide it.
+The opaque-region hint is retained, but no unsupported webOS protocol or DRM
+path is assumed to force scanout.
+
+No production busy loop, aggressive swap mode, high context priority, RGB565,
+partial damage, compiler fast-math, or overclocking change was enabled. These
+experiments either belong exclusively to the stress binary or are unavailable
+on the audited firmware.
+
 ## webOS shell lifecycle integration
 
 The target advertises `wl_webos_shell` version 1. The renderers now bind the
@@ -172,6 +300,11 @@ triangle to three distinct offsets without duplicate actions.
 - Builds now generate package metadata required by the SAM developer tree.
 - A standard, stress-opt-in IPK packager is available for inspection and
   compatible developer firmware.
+- `egl_diagnostics.c` records complete EGL/GL strings and extension capability
+  flags for both normal and stress EGL clients.
+- `scripts/gpu_status.sh` provides read-only Mali/devfreq/thermal diagnostics.
+- `EXTRA_CFLAGS` enables explicitly separated compiler experiments while
+  preserving the SDK's ARMv7-A softfp defaults.
 - Deployment normalizes directory traversal permissions for SAM's jailed
   `prisoner` user and recognizes jail-prefixed executable paths.
 - Remote Luna operations allocate the pseudo-terminal required by the audited

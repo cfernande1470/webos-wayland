@@ -141,6 +141,19 @@ The GPU path is confirmed only when the log includes an ARM EGL vendor and a
 Mali renderer. An OpenGL ES version string alone is not enough to rule out a
 software implementation.
 
+Capture a read-only platform snapshot with:
+
+```bash
+./scripts/gpu_status.sh
+```
+
+This reports generic devfreq nodes when present, then the target's
+`/sys/devices/platform/mali.0` diagnostics, runtime power files, galcore
+parameters, thermal zones, and exposed frequency/clock files. It performs no
+writes. On the audited firmware there is no generic devfreq node and no
+thermal-zone entry; the Mali driver reports a fixed policy and all three cores
+available (`0x7`).
+
 Useful remote checks:
 
 ```bash
@@ -169,6 +182,18 @@ WEBOS_SHELL_CLOSE
 Input diagnostics include the seat index in `BIND_SEAT`, `SEAT_CAPS`,
 `KEY`, `POINTER_ENTER`, and `POINTER_BUTTON`. `INPUT_DUPLICATE` records an
 event intentionally suppressed by the shared multi-seat router.
+
+The stress renderer is never selected by the normal installer. Install it only
+for a controlled benchmark:
+
+```bash
+INCLUDE_STRESS=1 ./scripts/install_tv_lowspace.sh
+```
+
+Its `frame`, `swap`, and `offscreen` pacing modes are documented in
+`docs/PERFORMANCE_AUDIT.md`. Always record `STRESS_SUMMARY`,
+`STRESS_CPU_SUBMIT_MS`, and `STRESS_GPU_MS` together; presented FPS alone cannot
+distinguish compositor pacing from Mali throughput.
 
 The audited firmware requires an SSH pseudo-terminal for remote `luna-send`
 calls. The launch, status, stop, and installer scripts therefore use `ssh -tt`

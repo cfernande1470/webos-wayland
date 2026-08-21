@@ -160,12 +160,28 @@ remain a diagnostics and fallback path.
 ## Stress renderer
 
 `wayland_egl_stress` uses a full-screen triangle and a fragment shader to cover
-the complete render target. With `STRESS_FORCE_4K=1`, it ignores the compositor's
-1920x1080 configure size and keeps a 3840x2160 EGL window.
+the complete render target. It has three deliberately separate measurement
+paths: frame-callback presentation, swap-without-frame-callback presentation,
+and an FBO-only path that avoids presenting each iteration. The FBO path limits
+GPU work in flight so it measures completed work rather than an ever-growing
+submission queue.
 
-Timing uses `CLOCK_MONOTONIC`. The renderer logs recent and average FPS every
-two seconds. It is packaged only when `INCLUDE_STRESS=1` is supplied to the
-installer.
+The shader is generated with a constant loop bound for the GLES compiler and
+supports ALU, SFU, and texture workloads, iteration counts from 1 through 64,
+and highp/mediump comparison. GPU timing uses dynamically loaded
+`GL_EXT_disjoint_timer_query` functions when the driver advertises them; CPU
+submit timing is collected independently. Resolution, window color format, and
+optional IMG context priority are benchmark variables, never production
+defaults.
+
+Timing uses `CLOCK_MONOTONIC` and reports workload FPS, presented FPS, CPU
+submit percentiles, and GPU percentiles. It is packaged only when
+`INCLUDE_STRESS=1` is supplied to the installer.
+
+`egl_diagnostics.c` logs full EGL/GL strings and selected profiling-related
+extensions. On the target, timer queries are available but partial-update,
+buffer-age, and swap-with-damage extensions are absent, so the normal renderer
+continues to use conservative full-frame presentation.
 
 ## webOS-specific protocols
 

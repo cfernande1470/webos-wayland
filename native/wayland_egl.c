@@ -4,6 +4,7 @@
 #include <EGL/egl.h>
 #include <GLES2/gl2.h>
 
+#include "egl_diagnostics.h"
 #include "webos_input.h"
 #include "webos_shell.h"
 
@@ -55,6 +56,7 @@ struct app {
     int render_visible;
     int frame;
     int theme;
+    char color_mode[16];
 
     int pointer_x;
     int pointer_y;
@@ -180,11 +182,26 @@ static int choose_config(struct app *a) {
         eglGetConfigAttrib(a->egl_display, configs[i], EGL_CONFIG_CAVEAT, &caveat);
 
         if (!(surface & EGL_WINDOW_BIT) || !(renderable & EGL_OPENGL_ES2_BIT) ||
-            red < 8 || green < 8 || blue < 8 || caveat == EGL_SLOW_CONFIG) {
+            caveat == EGL_SLOW_CONFIG) {
             continue;
         }
 
-        int score = (alpha == 0 ? 10000 : 0) - alpha * 100 - depth * 10 - stencil * 10;
+        if (strcmp(a->color_mode, "565") == 0) {
+            if (red < 5 || green < 6 || blue < 5 || alpha != 0) continue;
+        } else if (strcmp(a->color_mode, "rgb888") == 0) {
+            if (red < 8 || green < 8 || blue < 8 || alpha != 0) continue;
+        } else if (strcmp(a->color_mode, "8888") == 0) {
+            if (red < 8 || green < 8 || blue < 8 || alpha < 8) continue;
+        } else if (red < 8 || green < 8 || blue < 8) {
+            continue;
+        }
+
+        int score = 0;
+        if (strcmp(a->color_mode, "auto") == 0) score += alpha == 0 ? 10000 : 0;
+        if (strcmp(a->color_mode, "565") == 0) {
+            score += red == 5 && green == 6 && blue == 5 ? 10000 : 0;
+        }
+        score -= alpha * 100 + depth * 10 + stencil * 10;
         score -= (red - 8) + (green - 8) + (blue - 8);
         if (score > best_score) {
             best_score = score;
@@ -210,6 +227,7 @@ static int choose_config(struct app *a) {
     eglGetConfigAttrib(a->egl_display, best, EGL_STENCIL_SIZE, &stencil);
     fprintf(stderr, "EGL_CONFIG id=%d rgba=%d/%d/%d/%d depth=%d stencil=%d\n",
             id, red, green, blue, alpha, depth, stencil);
+    fprintf(stderr, "EGL_COLOR_MODE selected=%s\n", a->color_mode);
     return 0;
 }
 
@@ -290,6 +308,8 @@ static int init_egl(struct app *a) {
         die_egl("eglMakeCurrent");
         return -1;
     }
+
+    egl_log_capabilities(a->egl_display, "NORMAL");
 
     if (!eglSwapInterval(a->egl_display, 1)) {
         die_egl("eglSwapInterval");
@@ -590,6 +610,18 @@ int main(int argc, char **argv) {
 
     struct app a;
     memset(&a, 0, sizeof(a));
+    const char *color_mode = getenv("EGL_COLOR_MODE");
+    if (color_mode && (strcmp(color_mode, "auto") == 0 ||
+                       strcmp(color_mode, "8888") == 0 ||
+                       strcmp(color_mode, "rgb888") == 0 ||
+                       strcmp(color_mode, "565") == 0)) {
+        snprintf(a.color_mode, sizeof(a.color_mode), "%s", color_mode);
+    } else {
+        if (color_mode) {
+            fprintf(stderr, "EGL_COLOR_MODE_INVALID value=%s fallback=auto\n", color_mode);
+        }
+        snprintf(a.color_mode, sizeof(a.color_mode), "auto");
+    }
     webos_input_context_init(&a.input, &a, &input_callbacks);
     webos_shell_context_init(
         &a.webos_shell, &a, webos_visibility_changed, webos_close_requested

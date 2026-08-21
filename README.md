@@ -93,6 +93,7 @@ load, not an application renderer.
 ```text
 native/
   native_main.c              SAM entry point and renderer launcher
+  egl_diagnostics.c/.h       EGL/GL strings and extension capability logging
   webos_input.c/.h           shared multi-seat input and deduplication
   webos_shell.c/.h           shared webOS shell lifecycle integration
   wayland_egl.c              normal GPU renderer
@@ -102,6 +103,7 @@ native/
 scripts/
   build.sh                   cross-build and ABI checks
   package_ipk.sh             optional standard IPK packaging
+  gpu_status.sh              read-only Mali/devfreq/thermal diagnostics
   install_tv_lowspace.sh     canonical installer
   launch_tv.sh               SAM launch and diagnostics
   stop_tv.sh                 targeted application shutdown
@@ -160,6 +162,7 @@ APP_ID             default: org.webosbrew.wayland
 APP_TITLE          default: Wayland EGL Native Lab
 APP_VERSION        default: 0.1.0
 DEFAULT_RENDERER   default: wayland_egl
+EXTRA_CFLAGS       optional experimental flags; default: empty
 ```
 
 `APP_ID` is validated before any output directory is removed. It may only
@@ -264,6 +267,57 @@ ssh root@192.168.2.121 \
   'grep -E "WEBOS_SHELL_(BOUND|ATTACHED|STATE|EXPOSED|VISIBILITY|CLOSE)" \
    /tmp/org.webosbrew.wayland.client.log'
 ```
+
+## Mali stress benchmark
+
+Install the stress binary explicitly:
+
+```bash
+INCLUDE_STRESS=1 ./scripts/install_tv_lowspace.sh
+```
+
+Run a compositor-paced presentation benchmark:
+
+```bash
+ssh root@192.168.2.121 \
+  'APP_ID=org.webosbrew.wayland XDG_RUNTIME_DIR=/tmp/xdg \
+   WAYLAND_DISPLAY=wayland-0 STRESS_PACING=frame STRESS_WORKLOAD=alu \
+   STRESS_ITERS=1 STRESS_RESOLUTION=1080p STRESS_DURATION_MS=10000 \
+   /media/developer/apps/usr/palm/applications/org.webosbrew.wayland/bin/wayland_egl_stress'
+```
+
+Compare EGL/surface-manager pacing with interval zero:
+
+```bash
+STRESS_PACING=swap STRESS_SWAP_INTERVAL=0
+```
+
+Measure GPU work without presenting each iteration:
+
+```bash
+STRESS_PACING=offscreen STRESS_WORKLOAD=alu STRESS_ITERS=16 \
+STRESS_PRECISION=mediump STRESS_RESOLUTION=4k
+```
+
+Change the workload with `STRESS_WORKLOAD=alu|sfu|bandwidth`, the loop count
+with `STRESS_ITERS=1|2|4|8|16|32|64`, and precision with
+`STRESS_PRECISION=highp|mediump|auto`. `STRESS_WIDTH` and `STRESS_HEIGHT` can
+override presets. The output separates `STRESS_CPU_SUBMIT_MS` from
+`STRESS_GPU_MS` and includes average, p50, p95, and p99.
+
+Optional experiments are `EGL_COLOR_MODE=auto|8888|rgb888|565` and
+`EGL_CONTEXT_PRIORITY=default|high`. Keep these out of production until the
+display output and thermal behavior have been checked.
+
+Capture read-only Mali, devfreq, power, and thermal state with:
+
+```bash
+./scripts/gpu_status.sh
+```
+
+The target currently exposes no generic devfreq or thermal-zone nodes, so this
+script reports the Mali platform driver's available diagnostics instead. It
+never changes governors, clocks, voltage, or core masks.
 
 ## Android launcher experiment
 

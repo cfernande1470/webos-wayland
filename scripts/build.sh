@@ -5,6 +5,8 @@ APP_ID="${APP_ID:-org.webosbrew.wayland}"
 APP_TITLE="${APP_TITLE:-Wayland EGL Native Lab}"
 APP_VERSION="${APP_VERSION:-0.1.0}"
 DEFAULT_RENDERER="${DEFAULT_RENDERER:-wayland_egl}"
+EXTRA_CFLAGS="${EXTRA_CFLAGS:-}"
+read -r -a EXTRA_CFLAGS_ARRAY <<< "$EXTRA_CFLAGS"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$ROOT/dist/$APP_ID"
 
@@ -67,14 +69,14 @@ find "$SYSROOT/usr/lib" -maxdepth 2 \( -name 'libwayland-egl*' -o -name 'libwayl
 
 echo
 echo "===== BUILD native_main ====="
-"$CC" -O2 -Wall -Wextra \
+"$CC" -O2 -Wall -Wextra "${EXTRA_CFLAGS_ARRAY[@]}" \
   -DAPP_ID=\"${APP_ID}\" \
   "$ROOT/native/native_main.c" \
   -o "$OUT/bin/native_main"
 
 echo
 echo "===== BUILD wayland_rect fallback ====="
-"$CC" -O2 -Wall -Wextra \
+"$CC" -O2 -Wall -Wextra "${EXTRA_CFLAGS_ARRAY[@]}" \
   "$ROOT/native/wayland_rect.c" \
   "$ROOT/native/webos_input.c" \
   "$ROOT/native/webos_shell.c" \
@@ -83,8 +85,9 @@ echo "===== BUILD wayland_rect fallback ====="
 
 echo
 echo "===== BUILD wayland_egl ====="
-"$CC" -O2 -Wall -Wextra \
+"$CC" -O2 -Wall -Wextra "${EXTRA_CFLAGS_ARRAY[@]}" \
   "$ROOT/native/wayland_egl.c" \
+  "$ROOT/native/egl_diagnostics.c" \
   "$ROOT/native/webos_input.c" \
   "$ROOT/native/webos_shell.c" \
   -o "$OUT/bin/wayland_egl" \
@@ -93,8 +96,9 @@ echo "===== BUILD wayland_egl ====="
 if [ -f "$ROOT/native/wayland_egl_stress.c" ]; then
   echo
   echo "===== BUILD wayland_egl_stress ====="
-  "$CC" -O2 -Wall -Wextra \
+  "$CC" -O2 -Wall -Wextra "${EXTRA_CFLAGS_ARRAY[@]}" \
     "$ROOT/native/wayland_egl_stress.c" \
+    "$ROOT/native/egl_diagnostics.c" \
     "$ROOT/native/webos_input.c" \
     "$ROOT/native/webos_shell.c" \
     -o "$OUT/bin/wayland_egl_stress" \
