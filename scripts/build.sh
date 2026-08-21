@@ -76,6 +76,7 @@ echo
 echo "===== BUILD wayland_rect fallback ====="
 "$CC" -O2 -Wall -Wextra \
   "$ROOT/native/wayland_rect.c" \
+  "$ROOT/native/webos_input.c" \
   "$ROOT/native/webos_shell.c" \
   -o "$OUT/bin/wayland_rect" \
   -lwayland-webos-client -lwayland-client
@@ -84,6 +85,7 @@ echo
 echo "===== BUILD wayland_egl ====="
 "$CC" -O2 -Wall -Wextra \
   "$ROOT/native/wayland_egl.c" \
+  "$ROOT/native/webos_input.c" \
   "$ROOT/native/webos_shell.c" \
   -o "$OUT/bin/wayland_egl" \
   -lwayland-webos-client -lwayland-client -lwayland-egl -lEGL -lGLESv2 -lm
@@ -93,6 +95,7 @@ if [ -f "$ROOT/native/wayland_egl_stress.c" ]; then
   echo "===== BUILD wayland_egl_stress ====="
   "$CC" -O2 -Wall -Wextra \
     "$ROOT/native/wayland_egl_stress.c" \
+    "$ROOT/native/webos_input.c" \
     "$ROOT/native/webos_shell.c" \
     -o "$OUT/bin/wayland_egl_stress" \
     -lwayland-webos-client -lwayland-client -lwayland-egl -lEGL -lGLESv2 -lm

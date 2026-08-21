@@ -4,6 +4,7 @@
 #include <EGL/egl.h>
 #include <GLES2/gl2.h>
 
+#include "webos_input.h"
 #include "webos_shell.h"
 
 #include <unistd.h>
@@ -31,11 +32,8 @@ struct app {
     struct wl_surface *surface;
     struct wl_shell_surface *shell_surface;
     struct wl_callback *frame_cb;
+    struct webos_input_context input;
     struct webos_shell_context webos_shell;
-
-    struct wl_seat *seat;
-    struct wl_pointer *pointer;
-    struct wl_keyboard *keyboard;
 
     struct wl_egl_window *egl_window;
     EGLDisplay egl_display;
@@ -518,112 +516,41 @@ static const struct wl_shell_surface_listener shell_listener = {
     .popup_done = shell_popup_done
 };
 
-static void pointer_enter(void *data, struct wl_pointer *pointer, uint32_t serial,
-                          struct wl_surface *surface, wl_fixed_t sx, wl_fixed_t sy) {
-    (void)pointer;
-    (void)serial;
-    (void)surface;
-
+static void input_pointer_enter(void *data, int x, int y) {
     struct app *a = data;
-    a->pointer_x = wl_fixed_to_int(sx);
-    a->pointer_y = wl_fixed_to_int(sy);
-
-    fprintf(stderr, "POINTER_ENTER x=%d y=%d\n", a->pointer_x, a->pointer_y);
+    a->pointer_x = x;
+    a->pointer_y = y;
 }
 
-static void pointer_leave(void *data, struct wl_pointer *pointer, uint32_t serial,
-                          struct wl_surface *surface) {
+static void input_pointer_leave(void *data) {
     (void)data;
-    (void)pointer;
-    (void)serial;
-    (void)surface;
-
-    fprintf(stderr, "POINTER_LEAVE\n");
 }
 
-static void pointer_motion(void *data, struct wl_pointer *pointer, uint32_t time,
-                           wl_fixed_t sx, wl_fixed_t sy) {
-    (void)pointer;
-    (void)time;
-
+static void input_pointer_motion(void *data, int x, int y) {
     struct app *a = data;
-    a->pointer_x = wl_fixed_to_int(sx);
-    a->pointer_y = wl_fixed_to_int(sy);
+    a->pointer_x = x;
+    a->pointer_y = y;
 }
 
-static void pointer_button(void *data, struct wl_pointer *pointer, uint32_t serial,
-                           uint32_t time, uint32_t button, uint32_t state) {
-    (void)pointer;
-    (void)serial;
-    (void)time;
-
+static void input_pointer_button(
+    void *data, uint32_t button, uint32_t state, int x, int y
+) {
     struct app *a = data;
-
-    fprintf(stderr, "POINTER_BUTTON button=%u state=%u x=%d y=%d\n",
-            button, state, a->pointer_x, a->pointer_y);
+    a->pointer_x = x;
+    a->pointer_y = y;
 
     if (button == 272 && state == WL_POINTER_BUTTON_STATE_PRESSED) {
         a->theme++;
     }
 }
 
-static void pointer_axis(void *data, struct wl_pointer *pointer, uint32_t time,
-                         uint32_t axis, wl_fixed_t value) {
+static void input_keyboard_focus(void *data, int focused) {
     (void)data;
-    (void)pointer;
-    (void)time;
-    (void)axis;
-    (void)value;
+    fprintf(stderr, "KEYBOARD_FOCUS focused=%d\n", focused);
 }
 
-static const struct wl_pointer_listener pointer_listener = {
-    .enter = pointer_enter,
-    .leave = pointer_leave,
-    .motion = pointer_motion,
-    .button = pointer_button,
-    .axis = pointer_axis
-};
-
-static void keyboard_keymap(void *data, struct wl_keyboard *keyboard,
-                            uint32_t format, int32_t fd, uint32_t size) {
-    (void)data;
-    (void)keyboard;
-    (void)format;
-    (void)size;
-
-    if (fd >= 0) close(fd);
-}
-
-static void keyboard_enter(void *data, struct wl_keyboard *keyboard, uint32_t serial,
-                           struct wl_surface *surface, struct wl_array *keys) {
-    (void)data;
-    (void)keyboard;
-    (void)serial;
-    (void)surface;
-    (void)keys;
-
-    fprintf(stderr, "KEYBOARD_ENTER\n");
-}
-
-static void keyboard_leave(void *data, struct wl_keyboard *keyboard, uint32_t serial,
-                           struct wl_surface *surface) {
-    (void)data;
-    (void)keyboard;
-    (void)serial;
-    (void)surface;
-
-    fprintf(stderr, "KEYBOARD_LEAVE\n");
-}
-
-static void keyboard_key(void *data, struct wl_keyboard *keyboard, uint32_t serial,
-                         uint32_t time, uint32_t key, uint32_t state) {
-    (void)keyboard;
-    (void)serial;
-    (void)time;
-
+static void input_keyboard_key(void *data, uint32_t key, uint32_t state) {
     struct app *a = data;
-
-    fprintf(stderr, "KEY key=%u state=%u\n", key, state);
 
     if (state != WL_KEYBOARD_KEY_STATE_PRESSED) return;
 
@@ -645,54 +572,13 @@ static void keyboard_key(void *data, struct wl_keyboard *keyboard, uint32_t seri
     }
 }
 
-static void keyboard_modifiers(void *data, struct wl_keyboard *keyboard, uint32_t serial,
-                               uint32_t mods_depressed, uint32_t mods_latched,
-                               uint32_t mods_locked, uint32_t group) {
-    (void)data;
-    (void)keyboard;
-    (void)serial;
-    (void)mods_depressed;
-    (void)mods_latched;
-    (void)mods_locked;
-    (void)group;
-}
-
-static const struct wl_keyboard_listener keyboard_listener = {
-    .keymap = keyboard_keymap,
-    .enter = keyboard_enter,
-    .leave = keyboard_leave,
-    .key = keyboard_key,
-    .modifiers = keyboard_modifiers
-};
-
-static void seat_capabilities(void *data, struct wl_seat *seat, uint32_t caps) {
-    struct app *a = data;
-
-    fprintf(stderr, "SEAT_CAPS caps=%u seat=%p\n", caps, (void*)seat);
-
-    if ((caps & WL_SEAT_CAPABILITY_POINTER) && !a->pointer) {
-        struct wl_pointer *ptr = wl_seat_get_pointer(seat);
-        wl_pointer_add_listener(ptr, &pointer_listener, a);
-        a->pointer = ptr;
-        fprintf(stderr, "POINTER_ATTACHED seat=%p ptr=%p\n", (void*)seat, (void*)ptr);
-    } else if (!(caps & WL_SEAT_CAPABILITY_POINTER) && a->pointer) {
-        wl_pointer_release(a->pointer);
-        a->pointer = NULL;
-    }
-
-    if ((caps & WL_SEAT_CAPABILITY_KEYBOARD) && !a->keyboard) {
-        struct wl_keyboard *kbd = wl_seat_get_keyboard(seat);
-        wl_keyboard_add_listener(kbd, &keyboard_listener, a);
-        a->keyboard = kbd;
-        fprintf(stderr, "KEYBOARD_ATTACHED seat=%p kbd=%p\n", (void*)seat, (void*)kbd);
-    } else if (!(caps & WL_SEAT_CAPABILITY_KEYBOARD) && a->keyboard) {
-        wl_keyboard_release(a->keyboard);
-        a->keyboard = NULL;
-    }
-}
-
-static const struct wl_seat_listener seat_listener = {
-    .capabilities = seat_capabilities
+static const struct webos_input_callbacks input_callbacks = {
+    .pointer_enter = input_pointer_enter,
+    .pointer_leave = input_pointer_leave,
+    .pointer_motion = input_pointer_motion,
+    .pointer_button = input_pointer_button,
+    .keyboard_focus = input_keyboard_focus,
+    .keyboard_key = input_keyboard_key
 };
 
 static void registry_global(void *data, struct wl_registry *registry,
@@ -704,6 +590,7 @@ static void registry_global(void *data, struct wl_registry *registry,
     if (webos_shell_try_bind(&a->webos_shell, registry, name, interface, version)) {
         return;
     }
+    if (webos_input_try_bind(&a->input, registry, name, interface, version)) return;
 
     if (strcmp(interface, "wl_compositor") == 0) {
         a->compositor = wl_registry_bind(
@@ -711,19 +598,13 @@ static void registry_global(void *data, struct wl_registry *registry,
         );
     } else if (strcmp(interface, "wl_shell") == 0) {
         a->shell = wl_registry_bind(registry, name, &wl_shell_interface, 1);
-    } else if (strcmp(interface, "wl_seat") == 0 && !a->seat) {
-        struct wl_seat *seat = wl_registry_bind(
-            registry, name, &wl_seat_interface, version < 3 ? version : 3
-        );
-        wl_seat_add_listener(seat, &seat_listener, a);
-        a->seat = seat;
-        fprintf(stderr, "BIND_SEAT id=%u proxy=%p version=%u\n", name, (void*)seat, version);
     }
 }
 
 static void registry_remove(void *data, struct wl_registry *registry, uint32_t name) {
     (void)registry;
     struct app *a = data;
+    webos_input_global_remove(&a->input, name);
     webos_shell_global_remove(&a->webos_shell, name);
 }
 
@@ -738,6 +619,7 @@ int main(int argc, char **argv) {
 
     struct app a;
     memset(&a, 0, sizeof(a));
+    webos_input_context_init(&a.input, &a, &input_callbacks);
     webos_shell_context_init(
         &a.webos_shell, &a, webos_visibility_changed, webos_close_requested
     );
@@ -838,9 +720,7 @@ int main(int argc, char **argv) {
     }
 
     if (a.egl_window) wl_egl_window_destroy(a.egl_window);
-    if (a.pointer) wl_pointer_release(a.pointer);
-    if (a.keyboard) wl_keyboard_release(a.keyboard);
-    if (a.seat) wl_seat_release(a.seat);
+    webos_input_context_destroy(&a.input);
     webos_shell_context_destroy(&a.webos_shell);
     if (a.shell_surface) wl_shell_surface_destroy(a.shell_surface);
     if (a.surface) wl_surface_destroy(a.surface);

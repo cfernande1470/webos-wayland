@@ -166,6 +166,10 @@ WEBOS_SHELL_CLOSE
 
 `WEBOS_SHELL_FALLBACK` means the renderer continued with core `wl_shell`.
 
+Input diagnostics include the seat index in `BIND_SEAT`, `SEAT_CAPS`,
+`KEY`, `POINTER_ENTER`, and `POINTER_BUTTON`. `INPUT_DUPLICATE` records an
+event intentionally suppressed by the shared multi-seat router.
+
 The audited firmware requires an SSH pseudo-terminal for remote `luna-send`
 calls. The launch, status, stop, and installer scripts therefore use `ssh -tt`
 for commands that call Luna. They also recognize executable paths prefixed by

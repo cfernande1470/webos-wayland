@@ -68,7 +68,8 @@ Important behavior:
 - marks the full Wayland surface as opaque;
 - uses `eglSwapInterval(1)` and Wayland frame callbacks;
 - derives animation time from compositor callback timestamps;
-- binds only the first advertised `wl_seat` to avoid duplicate input;
+- binds every advertised `wl_seat` so the Magic Remote seat is not missed;
+- deduplicates repeated key and pointer-button events across seats;
 - binds `wl_webos_shell` when version 1 or newer is advertised;
 - pauses frame production while the surface is minimized or fully obscured;
 - handles compositor close requests and requests Back/Exit key delivery;
@@ -92,6 +93,7 @@ load, not an application renderer.
 ```text
 native/
   native_main.c              SAM entry point and renderer launcher
+  webos_input.c/.h           shared multi-seat input and deduplication
   webos_shell.c/.h           shared webOS shell lifecycle integration
   wayland_egl.c              normal GPU renderer
   wayland_egl_stress.c       opt-in 4K stress renderer

@@ -146,14 +146,17 @@ without `INCLUDE_STRESS=1`.
 
 ## Input changes
 
-The TV advertised three version-3 `wl_seat` globals. The original clients bound
-all three while storing only one pointer and keyboard handle. The live log
-showed three keyboard focus events, creating a risk of repeated actions and
-leaked proxies.
+The TV advertises three version-3 `wl_seat` globals. Binding only the first seat
+avoided duplicate focus events but failed the physical Magic Remote test: Back
+was handled by webOS, while pointer motion and clicks never reached the client.
+Live diagnostics showed that the Magic Remote uses seat index 1.
 
-Clients now bind the first seat only, avoid duplicate pointer/keyboard creation,
-release devices when capabilities disappear, and destroy Wayland objects during
-normal shutdown.
+All renderers now use a shared multi-seat input router. It owns each seat's
+pointer and keyboard independently, aggregates focus, deduplicates identical
+key/button events within 20 ms, handles capability removal, and destroys proxies
+using requests valid for their advertised protocol versions. Hardware testing
+confirmed pointer entry and BTN_LEFT events on seat 1; three clicks moved the
+triangle to three distinct offsets without duplicate actions.
 
 ## Build and repository changes
 

@@ -52,7 +52,7 @@ wl_display
      -> wl_compositor
      -> wl_shell
      -> wl_webos_shell (optional v1+ lifecycle extension)
-     -> first wl_seat
+     -> all wl_seat globals (shared input router)
 
 wl_compositor
   -> wl_surface
@@ -65,9 +65,12 @@ with platform lifecycle information; it does not replace the core surface role.
 If the extension is absent or attachment fails, rendering continues through
 the verified `wl_shell` path.
 
-The target advertises several `wl_seat` globals. They may represent overlapping
-webOS input paths rather than independent users. Binding all of them generated
-duplicate focus events, so the clients intentionally bind only the first seat.
+The target advertises three `wl_seat` globals. They represent overlapping webOS
+input paths, but the Magic Remote pointer is delivered through the second seat
+rather than the first. `webos_input.c` therefore owns every advertised seat and
+its pointer/keyboard objects. It aggregates focus and suppresses identical key
+or pointer-button events received within a 20 ms window, preserving Magic
+Remote input without applying duplicate actions.
 
 Pointer and keyboard objects are created and released when seat capabilities
 change. The application handles Linux input key codes delivered by the webOS
