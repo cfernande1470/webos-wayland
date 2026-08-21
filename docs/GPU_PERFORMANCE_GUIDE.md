@@ -23,10 +23,13 @@ on one LG1212/Mali-G51 device and are not universal Mali limits.
 | Texture, 1 sample pair | ~9.5–10.5 ms | Depends on filter, precision, working set |
 | Opaque overdraw x2 | ~0.9 ms | Tile-based renderer retains useful locality |
 | Alpha overdraw x4 | ~2.7 ms | Blending costs materially more than opaque fill |
-| Two fullscreen passes | ~14.3 ms | Already close to the conservative 60 Hz budget |
-| Blur, 5 taps, two passes | ~16.0 ms | Exceeds the recommended production budget |
-| 500 tiny draw calls | ~2.9 ms GPU, ~2.6 ms CPU draw | CPU/driver overhead becomes visible |
-| 500 calls reduced to one call | ~0.1 ms GPU, ~0.03 ms CPU draw | Batching is highly valuable |
+| Minimal copy pass, 1 pass | ~0.98 ms | Structural texture-read plus render-target-write cost |
+| Minimal copy pass, 2 passes | ~1.98 ms | Approximately linear ping-pong cost |
+| Lightweight texture+ALU pass, 2 passes | ~3.73 ms | Shader arithmetic adds a measurable but bounded cost |
+| Effect shader, 2 passes | ~14.3 ms | The old synthetic visual shader, not a minimum pass |
+| Clean blur, 3/5/9 taps, 2 passes | ~3.21 / 5.33 / 9.59 ms | Simple weighted accumulation without visual decoration |
+| 500 command-pressure draws | ~3.0 ms GPU, ~2.7 ms CPU draw | CPU/driver overhead is visible |
+| 500 equivalent sprites, one batched draw | ~1.27 ms GPU, ~0.04 ms CPU draw | Real geometry batching removes submit overhead |
 
 The exact values vary with thermal state, background load, timer depth, and run
 ordering. Always compare p95, not just p50.
@@ -57,10 +60,10 @@ that stays below 12, 14, and 16 ms p95 for a selected workload.
    numerically sensitive accumulations.
 2. Keep opaque UI surfaces opaque. Fullscreen alpha blending is substantially
    more expensive than the minimal fill baseline.
-3. Avoid repeated fullscreen passes. Two realistic passes already approach the
-   conservative budget; blur kernels multiply that cost.
-4. Batch sprites and UI geometry. The 500-draw experiment was roughly an order
-   of magnitude slower than the equivalent single-call control.
+3. Avoid repeated fullscreen passes. A minimal copy pass is cheap, but shader
+   work and especially effect-style passes can multiply the cost quickly.
+4. Batch sprites and UI geometry. The equivalent-geometry sprite test shows
+   the CPU benefit directly; the command-pressure control is a separate test.
 5. Use atlases when they reduce state changes, but measure the actual shader and
    cache behavior. The current texture atlas experiment binds one texture for
    both logical inputs; it is a layout control, not a complete sprite engine.
@@ -90,18 +93,36 @@ call the result a valid compression benchmark.
 
 ## Multipass and post-processing
 
-`multipass` ping-pongs two RGBA8 FBO textures. `blur` performs horizontal and
-vertical-style passes with 3, 5, or 9 taps. These are intentionally simple
-proxies for bloom, blur, filters, and visualizers. They do not model every cache,
-format, or shader variation in a production effect.
+The benchmark now separates three multipass meanings:
+
+- `multipass_copy`: one texture sample and a render-target write, with a small
+  temporal perturbation to prevent identical-frame transaction elimination.
+- `multipass_alu`: the same dependency plus explicit lightweight ALU.
+- `multipass_effect`: the previous synthetic shader with grid, cursor, theme,
+  transcendental operations, and `pow`.
+
+All variants ping-pong two RGBA8 FBO textures. Both targets are cleared and
+finished before the measured warmup. The source/target IDs persist between
+frames, so `STRESS_PASSES=1` alternates valid A→B and B→A chains rather than
+sampling undefined storage. The GPU timer starts before the pass loop and ends
+after it, including FBO reattachment, texture binding, and draw commands, but
+excluding target initialization, warmup, logging, and cleanup.
+
+`blur` is now a clean horizontal/vertical-style weighted accumulation with 3,
+5, or 9 taps. It does not include the generic visual decoration block.
+
+The old phase-3 “two fullscreen passes ≈14.3 ms” remains valid for
+`multipass_effect`; it must not be used as the structural cost of every
+render-to-texture pass.
 
 ## CPU and state-change guidance
 
-Use `drawcalls` with `STRESS_DRAWS`, `STRESS_BATCH`, and
-`STRESS_PROGRAM_SWITCHES` to identify CPU/driver pressure. The benchmark uses a
-1x1 viewport for draw-call pressure so it does not confuse command overhead
-with a full-screen fragment workload. It is therefore not a sprite-quality or
-layout benchmark.
+Use `STRESS_WORKLOAD=command_pressure` (the `drawcalls` spelling remains an
+alias) with `STRESS_DRAWS` and `STRESS_PROGRAM_SWITCHES` to identify CPU/driver
+pressure. This control uses a 1x1 viewport and is intentionally not a visual
+scene. For equivalent geometry, use `STRESS_WORKLOAD=sprites` with
+`STRESS_SPRITES=N` and compare `STRESS_BATCH=0` against `STRESS_BATCH=1`: the
+same prebuilt quad VBO is drawn N times or once.
 
 ## Presentation and latency
 

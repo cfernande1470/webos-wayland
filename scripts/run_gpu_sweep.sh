@@ -6,7 +6,7 @@ APP_ID="${APP_ID:-org.webosbrew.wayland}"
 BIN="/media/developer/apps/usr/palm/applications/${APP_ID}/bin/wayland_egl_stress"
 SWEEP="${SWEEP:-quick}"
 REPEAT="${STRESS_REPEAT:-${SWEEP_REPEAT:-1}}"
-if [ "$SWEEP" = "full" ] || [ "$SWEEP" = "production" ]; then
+if [ "$SWEEP" = "full" ] || [ "$SWEEP" = "production" ] || [ "$SWEEP" = "phase31" ]; then
   DURATION_MS="${SWEEP_DURATION_MS:-2500}"
   WARMUP_MS="${SWEEP_WARMUP_MS:-500}"
 else
@@ -15,8 +15,8 @@ else
 fi
 
 case "$SWEEP" in
-  quick|production|full) ;;
-  *) echo "ERROR: SWEEP must be quick, production, or full" >&2; exit 2 ;;
+  quick|production|full|phase31) ;;
+  *) echo "ERROR: SWEEP must be quick, production, full, or phase31" >&2; exit 2 ;;
 esac
 
 case "$REPEAT" in
@@ -38,6 +38,28 @@ run_case() {
     ssh "$TV" "$envs $BIN" 2>/dev/null || echo "# case_failed=$label repeat=$repeat" >&2
   done
 }
+
+if [ "$SWEEP" = "phase31" ]; then
+  for workload in multipass_copy multipass_alu multipass_effect; do
+    for passes in 1 2 4 8; do
+      run_case "${workload}-${passes}" STRESS_WORKLOAD="$workload" STRESS_PASSES="$passes" STRESS_RESOLUTION=1080p
+    done
+  done
+  for taps in 3 5 9; do
+    run_case "blur-${taps}" STRESS_WORKLOAD=blur STRESS_BLUR_TAPS="$taps" STRESS_RESOLUTION=1080p
+  done
+  for draws in 100 500 1000; do
+    run_case "command-pressure-${draws}" STRESS_WORKLOAD=command_pressure STRESS_DRAWS="$draws" STRESS_RESOLUTION=1080p
+  done
+  for sprites in 100 500 1000; do
+    run_case "sprites-${sprites}-unbatched" STRESS_WORKLOAD=sprites STRESS_SPRITES="$sprites" STRESS_BATCH=0 STRESS_RESOLUTION=1080p
+    run_case "sprites-${sprites}-batched" STRESS_WORKLOAD=sprites STRESS_SPRITES="$sprites" STRESS_BATCH=1 STRESS_RESOLUTION=1080p
+  done
+  for switches in 0 10 100; do
+    run_case "program-switches-${switches}" STRESS_WORKLOAD=command_pressure STRESS_DRAWS=1000 STRESS_PROGRAM_SWITCHES="$switches" STRESS_RESOLUTION=1080p
+  done
+  exit 0
+fi
 
 if [ "$SWEEP" = "production" ]; then
   resolutions=(1080p)
@@ -91,7 +113,7 @@ if [ "$SWEEP" = "production" ] || [ "$SWEEP" = "full" ]; then
     fi
   done
   for passes in 1 2 4; do
-    run_case "multipass-$passes" STRESS_WORKLOAD=multipass STRESS_PASSES="$passes" STRESS_RESOLUTION=1080p
+    run_case "multipass-effect-$passes" STRESS_WORKLOAD=multipass_effect STRESS_PASSES="$passes" STRESS_RESOLUTION=1080p
   done
   for taps in 3 5 9; do
     run_case "blur-$taps" STRESS_WORKLOAD=blur STRESS_BLUR_TAPS="$taps" STRESS_RESOLUTION=1080p

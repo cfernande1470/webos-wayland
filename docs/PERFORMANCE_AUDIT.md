@@ -493,8 +493,9 @@ The following sources of bias were reviewed before adding workloads:
 
 ### New benchmark controls
 
-`wayland_egl_stress` now includes `overdraw`, `multipass`, `blur`, and
-`drawcalls` workloads. Important controls are:
+`wayland_egl_stress` includes `overdraw`, the corrected multipass variants,
+`blur`, command-pressure, and equivalent-geometry sprite workloads. Important
+controls are:
 
 ```text
 STRESS_LAYERS=1,2,4,8,16
@@ -605,6 +606,86 @@ The opt-in `EGL_LATENCY_TRACE=1` path in the normal renderer records software
 timestamps for input-to-submit, input-to-swap-return, input-to-frame-callback,
 and callback jitter. It is not input-to-photon measurement, and launcher
 environment propagation must be verified when collecting it through SAM.
+
+## Phase 3.1: methodology corrections and affected reruns
+
+Phase 3.1 was intentionally narrow. It corrected only biases found in the
+phase-3 multipass, blur, batching, and program-switch measurements; no new
+production renderer path or unrelated GPU workload was added.
+
+### Corrections
+
+- `multipass_copy` now contains one texture read and one render-target write,
+  with a small temporal output perturbation so repeated identical RGBA8 tiles
+  cannot make the pass look artificially free through transaction elimination.
+- `multipass_alu` adds explicit lightweight ALU to that same dependency.
+- The previous shader is now named `multipass_effect`; it retains the generic
+  grid/cursor/theme/transcendental decoration and is documented as an effect
+  workload, not a structural pass baseline.
+- `blur` now performs only horizontal/vertical texture taps and weighted
+  accumulation for 3, 5, or 9 taps.
+- Both ping-pong targets are cleared and completed with `glFinish()` before
+  `start_sec`/warmup. Source and target IDs persist across frames, so a
+  one-pass run alternates valid A→B and B→A inputs.
+- The timer query starts immediately before the pass loop and ends immediately
+  after it. It includes per-pass FBO attachment, texture binding, and draw
+  commands, but excludes target initialization, warmup, logging, and cleanup.
+- `drawcalls` is now reported as `command_pressure`. It remains the 1x1
+  viewport command-overhead control. A separate `sprites` workload constructs
+  equivalent quad geometry once and compares N draws with one batched draw.
+- Every GL program has its own attribute/uniform location set. Alternate
+  program switching no longer reuses locations from the primary program.
+- Atlas texture setup generates one texture in atlas mode; it no longer leaks a
+  second generated name that is overwritten.
+
+### Corrected hardware reruns
+
+The following results are the mean of three independent 1080p surfaceless runs
+(`STRESS_DURATION_MS=800`, 200 ms warmup). The summary also records min/max and
+standard deviation in `/tmp/phase31-final-summary.jsonl`; p95 values below are
+the mean of each run's p95.
+
+| Workload | Configuration | GPU p50 (ms) | GPU p95 (ms) | CPU draw avg (ms) | CPU total avg (ms) |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `multipass_copy` | 1 / 2 / 4 / 8 passes | 0.98 / 1.98 / 3.98 / 7.98 | 1.02 / 2.01 / 4.02 / 8.05 | 0.11 / 1.06 / 3.04 / 7.03 | 0.13 / 1.09 / 3.07 / 7.07 |
+| `multipass_alu` | 1 / 2 / 4 / 8 passes | 1.86 / 3.73 / 7.48 / 14.98 | 1.93 / 3.87 / 7.72 / 15.12 | 0.11 / 1.94 / 5.72 / 13.21 | 0.13 / 1.98 / 5.76 / 13.25 |
+| `multipass_effect` | 1 / 2 / 4 / 8 passes | 7.11 / 14.26 / 28.52 / 56.98 | 7.18 / 14.32 / 28.59 / 57.03 | 0.20 / 7.26 / 21.60 / 49.97 | 0.24 / 7.31 / 21.65 / 50.02 |
+| `blur` | 3 / 5 / 9 taps, two passes | 3.21 / 5.33 / 9.59 | 3.26 / 5.40 / 9.63 | 1.69 / 2.77 / 4.90 | 1.72 / 2.81 / 4.95 |
+| `command_pressure` | 100 / 500 / 1000 draws | 0.64 / 2.96 / 5.82 | 0.79 / 3.34 / 6.42 | 0.56 / 2.71 / 5.44 | 0.57 / 2.74 / 5.48 |
+| `sprites` unbatched | 100 / 500 / 1000 quads | 1.23 / 2.50 / 4.89 | 1.25 / 2.83 / 5.45 | 0.49 / 2.33 / 4.63 | 0.51 / 2.35 / 4.67 |
+| `sprites` batched | 100 / 500 / 1000 quads | 1.22 / 1.27 / 1.29 | 1.26 / 1.29 / 1.32 | 0.03 / 0.04 / 0.03 | 0.05 / 0.07 / 0.05 |
+
+Program switching was measured with 1000 command-pressure draws. The mean
+GPU p50/p95 was approximately 5.82/6.42 ms with zero switches,
+5.70/6.06 ms with 10 switches, and 6.01/7.06 ms with 100 switches. The
+variation is comparable to run-to-run noise for this short sweep; there is no
+evidence here for a large standalone program-switch penalty, but the corrected
+per-program locations remove a correctness risk.
+
+### Old versus corrected conclusions
+
+| Phase-3 statement | Phase-3.1 interpretation |
+| --- | --- |
+| “Two fullscreen passes are about 14.3 ms.” | True for the retained `multipass_effect` shader. A minimal copy pass is about 2.0 ms for two passes; texture+ALU is about 3.7 ms. |
+| “Blur 5 taps/two passes is about 16 ms.” | That included the generic visual shader. Clean blur is about 5.3 ms at 5 taps and 9.6 ms at 9 taps. |
+| “500 draws versus one draw demonstrates batching.” | The old test was command pressure only. Equivalent-geometry `sprites` now measures the real batching benefit: CPU draw time falls from about 2.33 ms to 0.04 ms at 500 quads. |
+
+Therefore the earlier conservative production rule remains valid, but its
+justification is more precise: two minimal copy passes are inexpensive, while
+two passes containing meaningful ALU/effect work can approach or exceed the
+12–16 ms budget. A clean 9-tap two-pass blur remains below 10 ms p95 in this
+synthetic test, but application kernels, blending, and composition still need
+their own margin.
+
+The JSONL/TSV schema now includes `blur_taps`, `sprites`, CPU summary fields,
+and the existing per-program `program_switches`. Use the affected-only matrix:
+
+```bash
+STRESS_REPEAT=3 SWEEP=phase31 \
+  SWEEP_DURATION_MS=2500 SWEEP_WARMUP_MS=500 \
+  ./scripts/run_gpu_sweep.sh > phase31.jsonl
+python3 scripts/summarize_gpu_sweep.py phase31.jsonl > phase31-summary.jsonl
+```
 
 ## Remaining opportunities
 

@@ -24,7 +24,7 @@ def main() -> int:
             key = tuple(row.get(field) for field in (
                 "workload", "pacing", "backend", "width", "height",
                 "precision", "iterations", "layers", "blend_mode", "passes",
-                "draw_calls", "program_switches", "batch", "texture_size", "texture_pattern", "texture_format", "texture_format_effective",
+                "draw_calls", "sprites", "blur_taps", "program_switches", "batch", "texture_size", "texture_pattern", "texture_format", "texture_format_effective",
                 "texture_filter", "texture_samples", "texture_layout",
             ))
             groups[key].append(row)
@@ -36,7 +36,7 @@ def main() -> int:
         fields = dict(zip((
             "workload", "pacing", "backend", "width", "height",
             "precision", "iterations", "layers", "blend_mode", "passes",
-            "draw_calls", "program_switches", "batch", "texture_size", "texture_pattern", "texture_format", "texture_format_effective",
+            "draw_calls", "sprites", "blur_taps", "program_switches", "batch", "texture_size", "texture_pattern", "texture_format", "texture_format_effective",
             "texture_filter", "texture_samples", "texture_layout",
         ), key))
         result = dict(fields)
@@ -46,6 +46,9 @@ def main() -> int:
             ("gpu_p50_ms", "gpu_p50_ms"),
             ("gpu_p95_ms", "gpu_p95_ms"),
             ("gpu_avg_ms", "gpu_avg_ms"),
+            ("cpu_draw_avg_ms", "cpu_draw_avg_ms"),
+            ("cpu_swap_avg_ms", "cpu_swap_avg_ms"),
+            ("cpu_total_avg_ms", "cpu_total_avg_ms"),
             ("mpixel_s", "mpixel_s"),
             ("ns_pixel", "ns_pixel"),
         ):

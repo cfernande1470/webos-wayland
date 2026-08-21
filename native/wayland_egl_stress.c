@@ -47,9 +47,12 @@ enum stress_workload {
     STRESS_WORKLOAD_BANDWIDTH,
     STRESS_WORKLOAD_FILL,
     STRESS_WORKLOAD_OVERDRAW,
-    STRESS_WORKLOAD_MULTIPASS,
+    STRESS_WORKLOAD_MULTIPASS_COPY,
+    STRESS_WORKLOAD_MULTIPASS_ALU,
+    STRESS_WORKLOAD_MULTIPASS_EFFECT,
     STRESS_WORKLOAD_BLUR,
-    STRESS_WORKLOAD_DRAWS
+    STRESS_WORKLOAD_COMMAND_PRESSURE,
+    STRESS_WORKLOAD_SPRITES
 };
 
 enum stress_blend_mode {
@@ -64,6 +67,19 @@ struct stress_gpu_timer_slot {
     int active;
     double started_sec;
     unsigned long long sequence;
+};
+
+struct stress_program_state {
+    GLuint id;
+    GLint attr_pos;
+    GLint uni_resolution;
+    GLint uni_time;
+    GLint uni_pointer;
+    GLint uni_theme;
+    GLint uni_texture0;
+    GLint uni_texture1;
+    GLint uni_layer;
+    GLint uni_pass;
 };
 
 struct app {
@@ -84,7 +100,7 @@ struct app {
     EGLConfig egl_config;
     int surface_backend;
 
-    GLuint program;
+    struct stress_program_state program;
     GLuint vbo;
     GLuint fbo;
     GLuint offscreen_texture;
@@ -92,17 +108,9 @@ struct app {
     GLuint bandwidth_texture1;
     GLuint multipass_texture_a;
     GLuint multipass_texture_b;
-    GLuint program_alt;
-
-    GLint attr_pos;
-    GLint uni_resolution;
-    GLint uni_time;
-    GLint uni_pointer;
-    GLint uni_theme;
-    GLint uni_texture0;
-    GLint uni_texture1;
-    GLint uni_layer;
-    GLint uni_pass;
+    GLuint multipass_source_texture;
+    GLuint multipass_target_texture;
+    struct stress_program_state program_alt;
 
     int width;
     int height;
@@ -122,6 +130,8 @@ struct app {
     int texture_compressed;
     int layers;
     int draws;
+    int sprites;
+    int vertex_count;
     int passes;
     int program_switches;
     int blur_taps;
@@ -134,7 +144,7 @@ struct app {
     char output_mode[16];
     enum stress_pacing pacing;
     enum stress_workload workload;
-    char workload_name[16];
+    char workload_name[24];
     char pacing_name[16];
     char color_mode[16];
     char priority_mode[16];
@@ -226,7 +236,9 @@ static GLuint make_program_once(struct app *a, int highp) {
         "}\n";
     const char *precision = highp ? "precision highp float;" : "precision mediump float;";
     const char *textures = (a->workload == STRESS_WORKLOAD_BANDWIDTH ||
-                            a->workload == STRESS_WORKLOAD_MULTIPASS ||
+                            a->workload == STRESS_WORKLOAD_MULTIPASS_COPY ||
+                            a->workload == STRESS_WORKLOAD_MULTIPASS_ALU ||
+                            a->workload == STRESS_WORKLOAD_MULTIPASS_EFFECT ||
                             a->workload == STRESS_WORKLOAD_BLUR)
         ? "uniform sampler2D u_texture0;\nuniform sampler2D u_texture1;\n"
         : "";
@@ -286,7 +298,20 @@ static GLuint make_program_once(struct app *a, int highp) {
         loop =
             "  acc = 0.1 + u_layer * 0.013 + u_time * 0.000001;\n";
         break;
-    case STRESS_WORKLOAD_MULTIPASS:
+    case STRESS_WORKLOAD_MULTIPASS_COPY:
+        loop =
+            "  vec4 previous = texture2D(u_texture0, v_uv);\n"
+            "  acc = previous.r + previous.g * 0.5 + previous.b * 0.25;\n";
+        break;
+    case STRESS_WORKLOAD_MULTIPASS_ALU:
+        loop =
+            "  vec4 previous = texture2D(u_texture0, v_uv);\n"
+            "  for (int i = 0; i < STRESS_ITERS; ++i) {\n"
+            "    previous = previous * 0.985 + vec4(0.0031, 0.0047, 0.0023, 0.0);\n"
+            "    acc += dot(previous.rgb, vec3(0.31, 0.47, 0.19));\n"
+            "  }\n";
+        break;
+    case STRESS_WORKLOAD_MULTIPASS_EFFECT:
         loop =
             "  vec4 previous = texture2D(u_texture0, v_uv);\n"
             "  for (int i = 0; i < STRESS_ITERS; ++i) {\n"
@@ -304,18 +329,30 @@ static GLuint make_program_once(struct app *a, int highp) {
             "  }\n"
             "  acc = dot(blur_sum.rgb, vec3(0.31, 0.47, 0.19));\n";
         break;
-    case STRESS_WORKLOAD_DRAWS:
+    case STRESS_WORKLOAD_COMMAND_PRESSURE:
         loop =
             "  acc = 0.001 + u_layer * 0.000013;\n";
+        break;
+    case STRESS_WORKLOAD_SPRITES:
+        loop =
+            "  acc = 0.002 + u_layer * 0.000013 + fract(v_uv.x + v_uv.y) * 0.001;\n";
         break;
     }
 
     const char *final_output = a->workload == STRESS_WORKLOAD_FILL
         ? "  gl_FragColor = vec4(0.125 + acc, 0.25, 0.5, 1.0);\n"
-        : (a->workload == STRESS_WORKLOAD_OVERDRAW || a->workload == STRESS_WORKLOAD_DRAWS)
+        : (a->workload == STRESS_WORKLOAD_MULTIPASS_COPY)
+        ? "  gl_FragColor = previous + vec4(vec3(fract(t * 1000.0) * 0.05), 0.0);\n"
+        : (a->workload == STRESS_WORKLOAD_MULTIPASS_ALU)
+        ? "  gl_FragColor = vec4(previous.rgb + vec3(acc * 0.0001 + fract(t * 1000.0) * 0.05), previous.a);\n"
+        : (a->workload == STRESS_WORKLOAD_BLUR)
+        ? "  gl_FragColor = blur_sum / float(STRESS_BLUR_TAPS) + vec4(vec3(fract(t * 1000.0) * 0.05), 0.0);\n"
+        : (a->workload == STRESS_WORKLOAD_OVERDRAW || a->workload == STRESS_WORKLOAD_COMMAND_PRESSURE)
         ? "  float layer_alpha = STRESS_BLEND_MODE == 0 ? 1.0 : 0.14;\n"
           "  vec3 layer_color = vec3(0.12 + fract(u_layer * 0.071), 0.25, 0.55);\n"
           "  gl_FragColor = vec4(STRESS_BLEND_MODE == 2 ? layer_color * layer_alpha : layer_color, layer_alpha);\n"
+        : (a->workload == STRESS_WORKLOAD_SPRITES)
+        ? "  gl_FragColor = vec4(fract(v_uv.x + acc), fract(v_uv.y + acc * 2.0), 0.5 + acc, 1.0);\n"
         : "  float grid = step(0.985, sin((uv.x + t * 0.03) * u_resolution.x * 0.16))\n"
           "             + step(0.985, sin((uv.y - t * 0.02) * u_resolution.y * 0.16));\n"
           "  float cursor = smoothstep(0.035, 0.0, distance(uv, mp));\n"
@@ -402,6 +439,41 @@ static GLuint make_program(struct app *a) {
 
     a->selected_highp = 0;
     return make_program_once(a, 0);
+}
+
+static void resolve_program_state(struct stress_program_state *state) {
+    state->attr_pos = glGetAttribLocation(state->id, "a_pos");
+    state->uni_resolution = glGetUniformLocation(state->id, "u_resolution");
+    state->uni_time = glGetUniformLocation(state->id, "u_time");
+    state->uni_pointer = glGetUniformLocation(state->id, "u_pointer");
+    state->uni_theme = glGetUniformLocation(state->id, "u_theme");
+    state->uni_texture0 = glGetUniformLocation(state->id, "u_texture0");
+    state->uni_texture1 = glGetUniformLocation(state->id, "u_texture1");
+    state->uni_layer = glGetUniformLocation(state->id, "u_layer");
+    state->uni_pass = glGetUniformLocation(state->id, "u_pass");
+}
+
+static int program_state_valid(const struct app *a,
+                               const struct stress_program_state *state) {
+    if (state->attr_pos < 0) return 0;
+    if (a->workload == STRESS_WORKLOAD_BANDWIDTH &&
+        (state->uni_texture0 < 0 || state->uni_texture1 < 0)) return 0;
+    if ((a->workload == STRESS_WORKLOAD_MULTIPASS_COPY ||
+         a->workload == STRESS_WORKLOAD_MULTIPASS_ALU ||
+         a->workload == STRESS_WORKLOAD_MULTIPASS_EFFECT ||
+         a->workload == STRESS_WORKLOAD_BLUR) && state->uni_texture0 < 0) return 0;
+    return 1;
+}
+
+static void set_program_uniforms(const struct stress_program_state *state,
+                                 const struct app *a, double time,
+                                 float layer, float pass) {
+    glUniform2f(state->uni_resolution, (GLfloat)a->width, (GLfloat)a->height);
+    glUniform1f(state->uni_time, (GLfloat)time);
+    glUniform2f(state->uni_pointer, (GLfloat)a->pointer_x, (GLfloat)a->pointer_y);
+    glUniform1f(state->uni_theme, (GLfloat)a->theme);
+    glUniform1f(state->uni_layer, layer);
+    glUniform1f(state->uni_pass, pass);
 }
 
 static int choose_config(struct app *a) {
@@ -616,6 +688,13 @@ static void init_texture(struct app *a, GLuint texture, int size, int seed) {
     free(pixels);
 }
 
+static int is_multipass_workload(enum stress_workload workload) {
+    return workload == STRESS_WORKLOAD_MULTIPASS_COPY ||
+           workload == STRESS_WORKLOAD_MULTIPASS_ALU ||
+           workload == STRESS_WORKLOAD_MULTIPASS_EFFECT ||
+           workload == STRESS_WORKLOAD_BLUR;
+}
+
 static int init_offscreen_target(struct app *a) {
     if (a->pacing != STRESS_PACING_OFFSCREEN && a->pacing != STRESS_PACING_PBUFFER) return 0;
 
@@ -626,7 +705,7 @@ static int init_offscreen_target(struct app *a) {
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, a->width, a->height, 0,
                  GL_RGBA, GL_UNSIGNED_BYTE, NULL);
 
-    if (a->workload == STRESS_WORKLOAD_MULTIPASS || a->workload == STRESS_WORKLOAD_BLUR) {
+    if (is_multipass_workload(a->workload)) {
         glGenTextures(1, &a->multipass_texture_b);
         glBindTexture(GL_TEXTURE_2D, a->multipass_texture_b);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -636,6 +715,8 @@ static int init_offscreen_target(struct app *a) {
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, a->width, a->height, 0,
                      GL_RGBA, GL_UNSIGNED_BYTE, NULL);
         a->multipass_texture_a = a->offscreen_texture;
+        a->multipass_source_texture = a->multipass_texture_a;
+        a->multipass_target_texture = a->multipass_texture_b;
     }
 
     glGenFramebuffers(1, &a->fbo);
@@ -648,6 +729,19 @@ static int init_offscreen_target(struct app *a) {
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         return -1;
     }
+    if (is_multipass_workload(a->workload)) {
+        glClearColor(0.04f, 0.06f, 0.09f, 1.0f);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                               GL_TEXTURE_2D, a->multipass_texture_a, 0);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                               GL_TEXTURE_2D, a->multipass_texture_b, 0);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                               GL_TEXTURE_2D, a->multipass_texture_a, 0);
+        glFinish();
+        fprintf(stderr, "STRESS_MULTIPASS_INIT targets=defined source=a target=b measured=0\n");
+    }
     fprintf(stderr, "STRESS_FBO size=%dx%d status=complete backend=%s multipass=%d\n", a->width, a->height,
             a->pacing == STRESS_PACING_PBUFFER ?
                 (a->surface_backend == 2 ? "surfaceless" : "pbuffer") : "window",
@@ -658,12 +752,13 @@ static int init_offscreen_target(struct app *a) {
 static int init_bandwidth_textures(struct app *a) {
     if (a->workload != STRESS_WORKLOAD_BANDWIDTH) return 0;
     glGenTextures(1, &a->bandwidth_texture0);
-    glGenTextures(1, &a->bandwidth_texture1);
-    if (!a->bandwidth_texture0 || !a->bandwidth_texture1) return -1;
+    if (!a->bandwidth_texture0) return -1;
     init_texture(a, a->bandwidth_texture0, a->texture_size, 3);
     if (a->texture_layout_atlas) {
         a->bandwidth_texture1 = a->bandwidth_texture0;
     } else {
+        glGenTextures(1, &a->bandwidth_texture1);
+        if (!a->bandwidth_texture1) return -1;
         init_texture(a, a->bandwidth_texture1, a->texture_size, 29);
     }
     fprintf(stderr, "STRESS_TEXTURES size=%dx%d count=%d working_set_mib=%.2f pattern=%s format=%s effective=%s filter=%s layout=%s samples=%d\n",
@@ -932,40 +1027,26 @@ static int init_egl(struct app *a) {
     fprintf(stderr, "STRESS_SWAP_INTERVAL %d pacing=%s applied=%d\n", swap_interval,
             a->pacing_name, a->pacing == STRESS_PACING_PBUFFER ? 0 : 1);
 
-    a->program = make_program(a);
-    if (!a->program) return -1;
+    a->program.id = make_program(a);
+    if (!a->program.id) return -1;
+    resolve_program_state(&a->program);
 
-    a->attr_pos = glGetAttribLocation(a->program, "a_pos");
-    a->uni_resolution = glGetUniformLocation(a->program, "u_resolution");
-    a->uni_time = glGetUniformLocation(a->program, "u_time");
-    a->uni_pointer = glGetUniformLocation(a->program, "u_pointer");
-    a->uni_theme = glGetUniformLocation(a->program, "u_theme");
-    a->uni_texture0 = glGetUniformLocation(a->program, "u_texture0");
-    a->uni_texture1 = glGetUniformLocation(a->program, "u_texture1");
-    a->uni_layer = glGetUniformLocation(a->program, "u_layer");
-    a->uni_pass = glGetUniformLocation(a->program, "u_pass");
-
-    if (a->attr_pos < 0 ||
-        ((a->workload == STRESS_WORKLOAD_BANDWIDTH &&
-          (a->uni_texture0 < 0 || a->uni_texture1 < 0)) ||
-         ((a->workload == STRESS_WORKLOAD_MULTIPASS ||
-           a->workload == STRESS_WORKLOAD_BLUR) && a->uni_texture0 < 0))) {
+    if (!program_state_valid(a, &a->program)) {
         fprintf(stderr, "ERROR required shader attribute or uniform is unavailable\n");
         return -1;
     }
     if (a->program_switches > 0) {
-        a->program_alt = make_program(a);
-        if (!a->program_alt) {
+        a->program_alt.id = make_program(a);
+        if (!a->program_alt.id) {
             fprintf(stderr, "ERROR alternate shader program unavailable\n");
             return -1;
         }
+        resolve_program_state(&a->program_alt);
+        if (!program_state_valid(a, &a->program_alt)) {
+            fprintf(stderr, "ERROR alternate shader uniforms are unavailable\n");
+            return -1;
+        }
     }
-
-    const GLfloat verts[] = {
-        -1.0f, -1.0f,
-         3.0f, -1.0f,
-        -1.0f,  3.0f
-    };
 
     glGenBuffers(1, &a->vbo);
     if (!a->vbo) {
@@ -973,7 +1054,38 @@ static int init_egl(struct app *a) {
         return -1;
     }
     glBindBuffer(GL_ARRAY_BUFFER, a->vbo);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_STATIC_DRAW);
+    if (a->workload == STRESS_WORKLOAD_SPRITES) {
+        int columns = (int)ceil(sqrt((double)a->sprites));
+        int rows = (a->sprites + columns - 1) / columns;
+        size_t vertex_count = (size_t)a->sprites * 6u;
+        GLfloat *verts = calloc(vertex_count * 2u, sizeof(*verts));
+        if (!verts) return -1;
+        for (int i = 0; i < a->sprites; i++) {
+            int col = i % columns;
+            int row = i / columns;
+            GLfloat x0 = -1.0f + 2.0f * (GLfloat)col / (GLfloat)columns;
+            GLfloat x1 = -1.0f + 2.0f * (GLfloat)(col + 1) / (GLfloat)columns;
+            GLfloat y0 = -1.0f + 2.0f * (GLfloat)row / (GLfloat)rows;
+            GLfloat y1 = -1.0f + 2.0f * (GLfloat)(row + 1) / (GLfloat)rows;
+            GLfloat quad[] = { x0, y0, x1, y0, x0, y1,
+                               x0, y1, x1, y0, x1, y1 };
+            memcpy(&verts[(size_t)i * 12u], quad, sizeof(quad));
+        }
+        glBufferData(GL_ARRAY_BUFFER, vertex_count * 2u * sizeof(*verts),
+                     verts, GL_STATIC_DRAW);
+        free(verts);
+        a->vertex_count = (int)vertex_count;
+        fprintf(stderr, "STRESS_SPRITES geometry=%d quads=%d vertices=%d columns=%d rows=%d\n",
+                a->sprites, a->sprites, a->vertex_count, columns, rows);
+    } else {
+        const GLfloat verts[] = {
+            -1.0f, -1.0f,
+             3.0f, -1.0f,
+            -1.0f,  3.0f
+        };
+        glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_STATIC_DRAW);
+        a->vertex_count = 3;
+    }
 
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_CULL_FACE);
@@ -1174,6 +1286,14 @@ static void log_summary(struct app *a) {
     double ns_pixel = measured_fps > 0.0 ? 1000000000.0 / (measured_fps * pixels) : 0.0;
     double estimated_flops = a->workload == STRESS_WORKLOAD_ALU ?
         measured_fps * pixels * (double)a->iterations * 23.0 / 1000000000.0 : 0.0;
+    int output_draw_calls = 1;
+    if (a->workload == STRESS_WORKLOAD_OVERDRAW) {
+        output_draw_calls = a->layers;
+    } else if (a->workload == STRESS_WORKLOAD_COMMAND_PRESSURE) {
+        output_draw_calls = a->batch ? 1 : a->draws;
+    } else if (a->workload == STRESS_WORKLOAD_SPRITES) {
+        output_draw_calls = a->batch ? 1 : a->sprites;
+    }
     double texture_samples = a->workload == STRESS_WORKLOAD_BANDWIDTH ?
         measured_fps * pixels * (double)a->iterations *
         (double)a->texture_samples * 2.0 : 0.0;
@@ -1210,14 +1330,14 @@ static void log_summary(struct app *a) {
     if (strcmp(a->output_mode, "jsonl") == 0 || strcmp(a->output_mode, "tsv") == 0) {
         if (strcmp(a->output_mode, "jsonl") == 0) {
             fprintf(stdout,
-                "{\"timestamp\":%.3f,\"workload\":\"%s\",\"pacing\":\"%s\",\"backend\":\"%s\",\"resolution\":\"%dx%d\",\"width\":%d,\"height\":%d,\"precision\":\"%s\",\"iterations\":%d,\"layers\":%d,\"blend_mode\":\"%s\",\"passes\":%d,\"draw_calls\":%d,\"program_switches\":%d,\"batch\":%d,\"texture_size\":%d,\"texture_pattern\":\"%s\",\"texture_format\":\"%s\",\"texture_format_effective\":\"%s\",\"texture_filter\":\"%s\",\"texture_samples\":%d,\"texture_layout\":\"%s\",\"color_format\":\"%s\",\"context_priority\":\"%s\",\"gpu_timer\":%s,\"timer_slots\":%d,\"gpu_timer_bits\":%d,\"timer_waits\":%llu,\"backpressure\":%llu,\"frames\":%llu,\"presented\":%llu,\"measured_frames\":%llu,\"measured_presented\":%llu,\"workload_fps\":%.4f,\"presented_fps\":%.4f,\"gpu_avg_ms\":%.4f,\"gpu_p50_ms\":%.4f,\"gpu_p95_ms\":%.4f,\"gpu_p99_ms\":%.4f,\"cpu_draw_avg_ms\":%.4f,\"cpu_swap_avg_ms\":%.4f,\"cpu_total_avg_ms\":%.4f,\"mpixel_s\":%.4f,\"ns_pixel\":%.4f,\"timer_ring_full\":%llu,\"finish_count\":%llu,\"query_completed\":%llu,\"query_discarded\":%llu}\n",
+                "{\"timestamp\":%.3f,\"workload\":\"%s\",\"pacing\":\"%s\",\"backend\":\"%s\",\"resolution\":\"%dx%d\",\"width\":%d,\"height\":%d,\"precision\":\"%s\",\"iterations\":%d,\"layers\":%d,\"draw_calls\":%d,\"sprites\":%d,\"blend_mode\":\"%s\",\"passes\":%d,\"blur_taps\":%d,\"program_switches\":%d,\"batch\":%d,\"texture_size\":%d,\"texture_pattern\":\"%s\",\"texture_format\":\"%s\",\"texture_format_effective\":\"%s\",\"texture_filter\":\"%s\",\"texture_samples\":%d,\"texture_layout\":\"%s\",\"color_format\":\"%s\",\"context_priority\":\"%s\",\"gpu_timer\":%s,\"timer_slots\":%d,\"gpu_timer_bits\":%d,\"timer_waits\":%llu,\"backpressure\":%llu,\"frames\":%llu,\"presented\":%llu,\"measured_frames\":%llu,\"measured_presented\":%llu,\"workload_fps\":%.4f,\"presented_fps\":%.4f,\"gpu_avg_ms\":%.4f,\"gpu_p50_ms\":%.4f,\"gpu_p95_ms\":%.4f,\"gpu_p99_ms\":%.4f,\"cpu_draw_avg_ms\":%.4f,\"cpu_swap_avg_ms\":%.4f,\"cpu_total_avg_ms\":%.4f,\"mpixel_s\":%.4f,\"ns_pixel\":%.4f,\"timer_ring_full\":%llu,\"finish_count\":%llu,\"query_completed\":%llu,\"query_discarded\":%llu}\n",
                 now, a->workload_name, a->pacing_name,
                 a->pacing == STRESS_PACING_PBUFFER ? (a->surface_backend == 2 ? "surfaceless" : "pbuffer") :
                     (a->pacing == STRESS_PACING_OFFSCREEN ? "window-fbo" : "window"),
                 a->width, a->height, a->width, a->height,
                 a->selected_highp ? "highp" : "mediump", a->iterations,
-                a->layers, blend_mode_name(a->blend_mode), a->passes, a->draws,
-                a->program_switches, a->batch,
+                a->layers, output_draw_calls, a->sprites, blend_mode_name(a->blend_mode),
+                a->passes, a->blur_taps, a->program_switches, a->batch,
                 a->texture_size, a->texture_pattern, a->texture_format,
                 a->texture_format_effective,
                 a->texture_filter, a->texture_samples,
@@ -1231,14 +1351,15 @@ static void log_summary(struct app *a) {
                 mpixel_s, ns_pixel, a->timer_ring_full, a->finish_count,
                 a->timer_completed, a->timer_discarded);
         } else {
-            fprintf(stdout, "timestamp\tworkload\tpacing\tbackend\twidth\theight\tprecision\titers\tlayers\tblend_mode\tpasses\tdraw_calls\tprogram_switches\tbatch\ttexture_size\ttexture_pattern\ttexture_format\ttexture_format_effective\ttexture_filter\ttexture_samples\ttexture_layout\tgpu_timer\ttimer_slots\tgpu_timer_bits\ttimer_waits\tbackpressure\tframes\tpresented\tmeasured_frames\tmeasured_presented\tworkload_fps\tpresented_fps\tgpu_avg_ms\tgpu_p50_ms\tgpu_p95_ms\tgpu_p99_ms\tcpu_draw_avg_ms\tcpu_swap_avg_ms\tcpu_total_avg_ms\tmpixel_s\tns_pixel\ttimer_ring_full\tfinish_count\tquery_completed\tquery_discarded\n");
-            fprintf(stdout, "%.3f\t%s\t%s\t%s\t%d\t%d\t%s\t%d\t%d\t%s\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t%s\t%s\t%d\t%s\t%d\t%d\t%d\t%llu\t%llu\t%llu\t%llu\t%llu\t%llu\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%llu\t%llu\t%llu\t%llu\n",
+            fprintf(stdout, "timestamp\tworkload\tpacing\tbackend\twidth\theight\tprecision\titers\tlayers\tdraw_calls\tsprites\tblend_mode\tpasses\tblur_taps\tprogram_switches\tbatch\ttexture_size\ttexture_pattern\ttexture_format\ttexture_format_effective\ttexture_filter\ttexture_samples\ttexture_layout\tgpu_timer\ttimer_slots\tgpu_timer_bits\ttimer_waits\tbackpressure\tframes\tpresented\tmeasured_frames\tmeasured_presented\tworkload_fps\tpresented_fps\tgpu_avg_ms\tgpu_p50_ms\tgpu_p95_ms\tgpu_p99_ms\tcpu_draw_avg_ms\tcpu_swap_avg_ms\tcpu_total_avg_ms\tmpixel_s\tns_pixel\ttimer_ring_full\tfinish_count\tquery_completed\tquery_discarded\n");
+            fprintf(stdout, "%.3f\t%s\t%s\t%s\t%d\t%d\t%s\t%d\t%d\t%d\t%d\t%s\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t%s\t%s\t%d\t%s\t%d\t%d\t%d\t%llu\t%llu\t%llu\t%llu\t%llu\t%llu\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%llu\t%llu\t%llu\t%llu\n",
                     now, a->workload_name, a->pacing_name,
                     a->pacing == STRESS_PACING_PBUFFER ? (a->surface_backend == 2 ? "surfaceless" : "pbuffer") :
                         (a->pacing == STRESS_PACING_OFFSCREEN ? "window-fbo" : "window"),
                     a->width, a->height, a->selected_highp ? "highp" : "mediump",
-                    a->iterations, a->layers, blend_mode_name(a->blend_mode), a->passes,
-                    a->draws, a->program_switches, a->batch, a->texture_size,
+                    a->iterations, a->layers, output_draw_calls, a->sprites,
+                    blend_mode_name(a->blend_mode), a->passes, a->blur_taps,
+                    a->program_switches, a->batch, a->texture_size,
                     a->texture_pattern, a->texture_format, a->texture_format_effective,
                     a->texture_filter, a->texture_samples,
                     a->texture_layout_atlas ? "atlas" : "separate",
@@ -1273,48 +1394,42 @@ static void render(struct app *a) {
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
     }
 
-    int multipass = a->workload == STRESS_WORKLOAD_MULTIPASS ||
-                    a->workload == STRESS_WORKLOAD_BLUR;
+    int multipass = is_multipass_workload(a->workload);
     int overdraw = a->workload == STRESS_WORKLOAD_OVERDRAW;
-    int drawcalls = a->workload == STRESS_WORKLOAD_DRAWS;
+    int command_pressure = a->workload == STRESS_WORKLOAD_COMMAND_PRESSURE;
+    int sprites = a->workload == STRESS_WORKLOAD_SPRITES;
     int pass_count = multipass ? a->passes : 1;
-    int draw_count = overdraw ? a->layers : (drawcalls ? a->draws : 1);
-    if (drawcalls && a->batch) draw_count = 1;
+    int draw_count = overdraw ? a->layers :
+                     (command_pressure ? a->draws :
+                      (sprites ? (a->batch ? 1 : a->sprites) : 1));
+    if (command_pressure && a->batch) draw_count = 1;
 
-    glViewport(0, 0, drawcalls ? 1 : a->width, drawcalls ? 1 : a->height);
-    glUseProgram(a->program);
+    glViewport(0, 0, command_pressure ? 1 : a->width,
+               command_pressure ? 1 : a->height);
+    glUseProgram(a->program.id);
 
     glBindBuffer(GL_ARRAY_BUFFER, a->vbo);
-    glEnableVertexAttribArray((GLuint)a->attr_pos);
-    glVertexAttribPointer((GLuint)a->attr_pos, 2, GL_FLOAT, GL_FALSE, 0, 0);
+    glEnableVertexAttribArray((GLuint)a->program.attr_pos);
+    glVertexAttribPointer((GLuint)a->program.attr_pos, 2, GL_FLOAT, GL_FALSE, 0, 0);
 
-    glUniform2f(a->uni_resolution, (GLfloat)a->width, (GLfloat)a->height);
-    glUniform1f(a->uni_time, (GLfloat)t);
-    glUniform2f(a->uni_pointer, (GLfloat)a->pointer_x, (GLfloat)a->pointer_y);
-    glUniform1f(a->uni_theme, (GLfloat)a->theme);
-    glUniform1f(a->uni_layer, 0.0f);
-    glUniform1f(a->uni_pass, 0.0f);
+    set_program_uniforms(&a->program, a, t, 0.0f, 0.0f);
 
     if (a->workload == STRESS_WORKLOAD_BANDWIDTH) {
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, a->bandwidth_texture0);
-        glUniform1i(a->uni_texture0, 0);
+        glUniform1i(a->program.uni_texture0, 0);
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, a->bandwidth_texture1);
-        glUniform1i(a->uni_texture1, 1);
+        glUniform1i(a->program.uni_texture1, 1);
     }
 
     if (multipass) {
-        if (!a->fbo || !a->multipass_texture_b) {
+        if (!a->fbo || !a->multipass_texture_b || !a->multipass_source_texture) {
             fprintf(stderr, "STRESS_MULTIPASS unavailable reason=offscreen_fbo_required\n");
             a->running = 0;
             return;
         }
         glBindFramebuffer(GL_FRAMEBUFFER, a->fbo);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-                               GL_TEXTURE_2D, a->multipass_texture_a, 0);
-        glClearColor(0.04f, 0.06f, 0.09f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT);
     }
 
     if (overdraw && a->blend_mode != STRESS_BLEND_NONE) {
@@ -1336,8 +1451,9 @@ static void render(struct app *a) {
     int timer_slot = begin_gpu_timer(a);
     double query_begin_end = now_sec();
     double draw_start = now_sec();
-    GLuint source_texture = a->multipass_texture_a;
-    GLuint target_texture = a->multipass_texture_b;
+    GLuint source_texture = a->multipass_source_texture;
+    GLuint target_texture = a->multipass_target_texture;
+    struct stress_program_state *active_program = &a->program;
     for (int pass = 0; pass < pass_count; pass++) {
         if (multipass) {
             glBindFramebuffer(GL_FRAMEBUFFER, a->fbo);
@@ -1345,19 +1461,36 @@ static void render(struct app *a) {
                                    GL_TEXTURE_2D, target_texture, 0);
             glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_2D, source_texture);
-            glUniform1i(a->uni_texture0, 0);
-            glUniform1f(a->uni_pass, (GLfloat)(pass & 1));
+            glUniform1i(active_program->uni_texture0, 0);
+            glUniform1f(active_program->uni_pass, (GLfloat)(pass & 1));
         }
         for (int draw = 0; draw < draw_count; draw++) {
-            if (a->program_switches > 0 && draw < a->program_switches && a->program_alt) {
-                glUseProgram((draw & 1) ? a->program_alt : a->program);
-                glUniform2f(a->uni_resolution, (GLfloat)a->width, (GLfloat)a->height);
-                glUniform1f(a->uni_time, (GLfloat)t);
-                glUniform1f(a->uni_layer, (GLfloat)draw);
-                glUniform1f(a->uni_pass, (GLfloat)(pass & 1));
+            struct stress_program_state *wanted_program = &a->program;
+            if (a->program_switches > 0 && a->program_alt.id) {
+                if (draw > 0 && draw <= a->program_switches) {
+                    wanted_program = (draw & 1) ? &a->program_alt : &a->program;
+                } else if (draw > a->program_switches &&
+                           (a->program_switches & 1)) {
+                    wanted_program = &a->program_alt;
+                }
             }
-            glUniform1f(a->uni_layer, (GLfloat)draw);
-            glDrawArrays(GL_TRIANGLES, 0, 3);
+            if (wanted_program != active_program) {
+                glUseProgram(wanted_program->id);
+                active_program = wanted_program;
+                set_program_uniforms(active_program, a, t, (GLfloat)draw,
+                                     (GLfloat)(pass & 1));
+                if (a->workload == STRESS_WORKLOAD_BANDWIDTH) {
+                    glUniform1i(active_program->uni_texture0, 0);
+                    glUniform1i(active_program->uni_texture1, 1);
+                } else if (multipass) {
+                    glUniform1i(active_program->uni_texture0, 0);
+                }
+            }
+            glUniform1f(active_program->uni_layer, (GLfloat)draw);
+            GLint first = sprites && !a->batch ? draw * 6 : 0;
+            GLsizei count = sprites && a->batch ? a->vertex_count :
+                            (sprites ? 6 : a->vertex_count);
+            glDrawArrays(GL_TRIANGLES, first, count);
         }
         if (multipass) {
             GLuint swap = source_texture;
@@ -1365,12 +1498,16 @@ static void render(struct app *a) {
             target_texture = swap;
         }
     }
+    if (multipass) {
+        a->multipass_source_texture = source_texture;
+        a->multipass_target_texture = target_texture;
+    }
     double draw_end = now_sec();
     double query_end_start = now_sec();
     end_gpu_timer(a, timer_slot);
     double query_end = now_sec();
 
-    glDisableVertexAttribArray((GLuint)a->attr_pos);
+    glDisableVertexAttribArray((GLuint)active_program->attr_pos);
     glDisable(GL_BLEND);
 
     if (a->pacing == STRESS_PACING_FRAME) {
@@ -1581,15 +1718,24 @@ static int configure_benchmark(struct app *a) {
     } else if (strcmp(workload, "overdraw") == 0) {
         a->workload = STRESS_WORKLOAD_OVERDRAW;
         copy_mode(a->workload_name, sizeof(a->workload_name), "overdraw", "overdraw");
-    } else if (strcmp(workload, "multipass") == 0) {
-        a->workload = STRESS_WORKLOAD_MULTIPASS;
-        copy_mode(a->workload_name, sizeof(a->workload_name), "multipass", "multipass");
+    } else if (strcmp(workload, "multipass_copy") == 0) {
+        a->workload = STRESS_WORKLOAD_MULTIPASS_COPY;
+        copy_mode(a->workload_name, sizeof(a->workload_name), "multipass_copy", "multipass_copy");
+    } else if (strcmp(workload, "multipass_alu") == 0) {
+        a->workload = STRESS_WORKLOAD_MULTIPASS_ALU;
+        copy_mode(a->workload_name, sizeof(a->workload_name), "multipass_alu", "multipass_alu");
+    } else if (strcmp(workload, "multipass") == 0 || strcmp(workload, "multipass_effect") == 0) {
+        a->workload = STRESS_WORKLOAD_MULTIPASS_EFFECT;
+        copy_mode(a->workload_name, sizeof(a->workload_name), "multipass_effect", "multipass_effect");
     } else if (strcmp(workload, "blur") == 0) {
         a->workload = STRESS_WORKLOAD_BLUR;
         copy_mode(a->workload_name, sizeof(a->workload_name), "blur", "blur");
-    } else if (strcmp(workload, "drawcalls") == 0) {
-        a->workload = STRESS_WORKLOAD_DRAWS;
-        copy_mode(a->workload_name, sizeof(a->workload_name), "drawcalls", "drawcalls");
+    } else if (strcmp(workload, "drawcalls") == 0 || strcmp(workload, "command_pressure") == 0) {
+        a->workload = STRESS_WORKLOAD_COMMAND_PRESSURE;
+        copy_mode(a->workload_name, sizeof(a->workload_name), "command_pressure", "command_pressure");
+    } else if (strcmp(workload, "sprites") == 0) {
+        a->workload = STRESS_WORKLOAD_SPRITES;
+        copy_mode(a->workload_name, sizeof(a->workload_name), "sprites", "sprites");
     } else {
         fprintf(stderr, "STRESS_WORKLOAD_INVALID value=%s fallback=alu\n", workload);
         a->workload = STRESS_WORKLOAD_ALU;
@@ -1599,6 +1745,7 @@ static int configure_benchmark(struct app *a) {
     a->iterations = parse_positive_env("STRESS_ITERS", 1, 1, 64);
     a->layers = parse_positive_env("STRESS_LAYERS", 1, 1, 64);
     a->draws = parse_positive_env("STRESS_DRAWS", 1, 1, 2000);
+    a->sprites = parse_positive_env("STRESS_SPRITES", 100, 1, 2000);
     a->passes = parse_positive_env("STRESS_PASSES",
                                   a->workload == STRESS_WORKLOAD_BLUR ? 2 : 1,
                                   1, 16);
@@ -1701,9 +1848,9 @@ static int configure_benchmark(struct app *a) {
     a->height = a->force_4k ? 2160 : 1080;
     if (parse_resolution(a) < 0) return -1;
     fprintf(stderr,
-            "STRESS_CONFIG workload=%s pacing=%s iters=%d layers=%d draws=%d passes=%d precision=%s color=%s priority=%s size=%dx%d offscreen_batch=%d timer_slots=%d gpu_timer=%s texture_size=%d texture_pattern=%s texture_format=%s filter=%s samples=%d layout=%s blend=%d blur_taps=%d batch=%d output=%s\n",
+            "STRESS_CONFIG workload=%s pacing=%s iters=%d layers=%d draws=%d sprites=%d passes=%d precision=%s color=%s priority=%s size=%dx%d offscreen_batch=%d timer_slots=%d gpu_timer=%s texture_size=%d texture_pattern=%s texture_format=%s filter=%s samples=%d layout=%s blend=%d blur_taps=%d batch=%d output=%s\n",
             a->workload_name, a->pacing_name, a->iterations,
-            a->layers, a->draws, a->passes,
+            a->layers, a->draws, a->sprites, a->passes,
             precision ? precision : "auto", a->color_mode, a->priority_mode,
             a->width, a->height, a->offscreen_batch, a->timer_slots,
             getenv("STRESS_GPU_TIMER") && strcmp(getenv("STRESS_GPU_TIMER"), "off") == 0 ? "off" : "on",
@@ -1844,8 +1991,8 @@ int main(int argc, char **argv) {
     free(a.callback_samples);
     free(a.gpu_samples);
     free(a.gpu_timers);
-    if (a.program_alt) glDeleteProgram(a.program_alt);
-    if (a.program) glDeleteProgram(a.program);
+    if (a.program_alt.id) glDeleteProgram(a.program_alt.id);
+    if (a.program.id) glDeleteProgram(a.program.id);
 
     if (a.egl_display != EGL_NO_DISPLAY) {
         eglMakeCurrent(a.egl_display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);

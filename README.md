@@ -323,7 +323,7 @@ ssh root@192.168.2.121 \
    /media/developer/apps/usr/palm/applications/org.webosbrew.wayland/bin/wayland_egl_stress'
 ```
 
-Change the workload with `STRESS_WORKLOAD=fill|alu|sfu|bandwidth|overdraw|multipass|blur|drawcalls`, the loop count
+Change the workload with `STRESS_WORKLOAD=fill|alu|sfu|bandwidth|overdraw|multipass_copy|multipass_alu|multipass_effect|blur|command_pressure|sprites`, the loop count
 with `STRESS_ITERS=1|2|4|8|16|32|64`, and precision with
 `STRESS_PRECISION=highp|mediump|auto`. `STRESS_WIDTH` and `STRESS_HEIGHT` can
 override presets (`720p`, `1080p`, `1440p`, `4k`). `fill` reports MPixel/s and
@@ -332,11 +332,12 @@ and GPU timing, each with average, p50, p95, and p99.
 
 The practical UI loads are controlled with `STRESS_LAYERS`,
 `STRESS_BLEND=none|alpha|premultiplied|additive`, `STRESS_PASSES`,
-`STRESS_BLUR_TAPS`, `STRESS_DRAWS`, `STRESS_PROGRAM_SWITCHES`, and
+`STRESS_BLUR_TAPS`, `STRESS_DRAWS`, `STRESS_SPRITES`, `STRESS_PROGRAM_SWITCHES`, and
 `STRESS_BATCH`. Texture experiments additionally accept
 `STRESS_TEXTURE_FORMAT`, `STRESS_FILTER`, `STRESS_TEXTURE_SAMPLES`, and
 `STRESS_TEXTURE_LAYOUT`; see `docs/PERFORMANCE_AUDIT.md` for the measured
-limitations of the ETC2/ASTC fallback and the command-pressure batch control.
+limitations of the ETC2/ASTC fallback, the command-pressure control, and the
+equivalent-geometry sprite batching test.
 
 Timer profiling and texture controls are explicit:
 
@@ -362,6 +363,10 @@ SWEEP=full SWEEP_DURATION_MS=2500 ./scripts/run_gpu_sweep.sh > sweep-full.jsonl
 STRESS_REPEAT=3 SWEEP=quick ./scripts/run_gpu_sweep.sh > sweep-repeat.jsonl
 python3 scripts/summarize_gpu_sweep.py sweep-repeat.jsonl > sweep-summary.jsonl
 BUDGET_WORKLOAD=overdraw BUDGET_VALUES=1,2,4,8 ./scripts/find_gpu_budget.sh
+
+# Affected-only phase 3.1 rerun
+STRESS_REPEAT=3 SWEEP=phase31 ./scripts/run_gpu_sweep.sh > phase31.jsonl
+python3 scripts/summarize_gpu_sweep.py phase31.jsonl > phase31-summary.jsonl
 ```
 
 Optional experiments are `EGL_COLOR_MODE=auto|8888|rgb888|565` and

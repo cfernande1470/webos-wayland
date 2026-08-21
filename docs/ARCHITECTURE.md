@@ -168,9 +168,10 @@ work in flight so they measure completed work rather than an ever-growing
 submission queue.
 
 The shader is generated with a constant loop bound for the GLES compiler and
-supports fill, ALU, SFU, texture, overdraw, multipass, blur, and draw-call
+supports fill, ALU, SFU, texture, overdraw, `multipass_copy`, `multipass_alu`,
+`multipass_effect`, blur, command-pressure, and equivalent-geometry sprite
 workloads. It parameterizes iteration counts, layers, blend modes, passes,
-draws, texture working sets, filters, samples, and deterministic access
+draws, sprites, texture working sets, filters, samples, and deterministic access
 patterns, while retaining highp/mediump comparison. GPU timing uses dynamically loaded
 `GL_EXT_disjoint_timer_query` functions when the driver advertises them; CPU
 draw, query, swap, frame-total, and frame-callback timing are collected
@@ -179,10 +180,12 @@ texture pattern, output format, and optional IMG context priority are benchmark
 variables, never production defaults.
 
 Overdraw uses controlled fullscreen layers with none, alpha, premultiplied, or
-additive blending. Multipass ping-pongs two RGBA8 FBO textures; blur uses a
-small separable-style kernel. The draw-call workload uses a 1x1 viewport to
-measure CPU/driver command pressure without conflating it with full-screen
-fragment cost. These are benchmark-only paths.
+additive blending. The three multipass variants ping-pong two RGBA8 FBO
+textures; both targets are initialized before warmup and the source/target
+chain persists across frames. `blur` uses only a small separable-style tap
+kernel. `command_pressure` (with `drawcalls` as a compatibility alias) uses a
+1x1 viewport. `sprites` builds equivalent quad geometry once and compares N
+draws with one VBO draw. These are benchmark-only paths.
 
 Timing uses `CLOCK_MONOTONIC` and reports workload FPS, presented FPS, derived
 MPixel/s and ns/pixel, machine-readable JSONL/TSV summaries, and percentiles

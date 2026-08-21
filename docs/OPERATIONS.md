@@ -218,6 +218,17 @@ workload FPS, GPU p50/p95/average, MPixel/s, and ns/pixel. Use
 `SWEEP=production` for the bounded UI-oriented matrix, or `SWEEP=full` for the
 larger exploration matrix.
 
+After the phase-3.1 methodology corrections, rerun only the affected cases:
+
+```bash
+STRESS_REPEAT=3 SWEEP=phase31 ./scripts/run_gpu_sweep.sh > phase31.jsonl
+python3 scripts/summarize_gpu_sweep.py phase31.jsonl > phase31-summary.jsonl
+```
+
+This matrix covers minimal/ALU/effect multipass, clean blur, command pressure,
+equivalent-geometry sprites, and program switching. It does not rerun the
+unrelated fill, SFU, or texture matrices.
+
 Find a safe p95 complexity budget directly:
 
 ```bash
